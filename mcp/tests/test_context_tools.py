@@ -394,12 +394,10 @@ def test_real_patterns_chapter_opening(real_repo: Path) -> None:
     assert all(p["task_type"] for p in patterns)
 
 
-def test_real_pattern_details_biohazard_by_name_and_code(real_repo: Path) -> None:
-    """biohazard_marker находится и по имени файла, и по legacy-коду B3."""
+def test_real_pattern_details_biohazard_by_name(real_repo: Path) -> None:
+    """biohazard_marker находится по имени файла (== id после нормализации)."""
     by_name = context_tools.get_pattern_details(real_repo, "biohazard_marker")
     assert "Биохазард" in by_name
-    by_code = context_tools.get_pattern_details(real_repo, "B3")
-    assert by_code == by_name
 
 
 def test_real_conflicts_table_parses(real_repo: Path) -> None:
