@@ -4,13 +4,16 @@
 главы. Все они **детерминированы**, читают только файлы репозитория,
 ничего не генерируют.
 
-Реализованы три базовые (брифинг §17 «минимальный рабочий MCP»):
-- :func:`get_book_info`   — общая информация о книге.
-- :func:`get_style_guide` — полный текст стилгайда.
-- :func:`get_chapter`     — содержание написанной главы (или её части).
-
-Остальные функции Группы A (паттерны, глоссарий, обещания, …) добавятся
-следующими сеансами.
+Реализована вся Группа A (брифинг §6):
+- :func:`get_book_info`          — общая информация о книге.
+- :func:`get_style_guide`        — полный текст стилгайда.
+- :func:`get_chapter`            — содержание главы (или её части).
+- :func:`get_chapter_plan`       — план главы (metadata.json целиком).
+- :func:`get_pending_promises`   — обещания, висящие на конкретной главе.
+- :func:`get_glossary`           — термины из разметки глав.
+- :func:`get_patterns_for_phase` — паттерны изложения для фазы главы.
+- :func:`get_pattern_details`    — полный текст конкретного паттерна.
+- :func:`get_conflicts_table`    — таблица конфликтов паттернов.
 
 Каждая функция принимает ``root: Path`` — корень репозитория. Это делает
 их тестируемыми без MCP и без переменных окружения: тест передаёт
@@ -19,6 +22,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +33,33 @@ import yaml
 
 import cache
 
+log = logging.getLogger("linalg-book-mcp.context_tools")
+
 # Имена подпапок дублируем сюда из config, чтобы context_tools не зависел
 # от config (config — про определение корня, это забота server.py).
 _BOOK_META = "book_meta"
 _CHAPTERS = "chapters"
+_PATTERNS = "patterns"
+
+# Имя фазы (параметр get_patterns_for_phase) → имя подпапки в patterns/.
+# Подпапки нумерованы для порядка в файловой системе; API оперирует
+# «чистыми» именами фаз (брифинг Часть 0, §6.3).
+_PHASE_DIRS = {
+    "global": "00_global",
+    "chapter_opening": "01_chapter_opening",
+    "introducing_concept": "02_introducing_concept",
+    "deriving_formula": "03_deriving_formula",
+    "climax": "04_climax",
+    "biohazards": "05_biohazards",
+    "pauses": "06_pauses",
+    "chapter_closing": "07_chapter_closing",
+    "tasks": "08_tasks",
+    "book_level": "09_book_level",
+}
+
+# Разметка термина в тексте главы: **[термин]{определение}**
+# (брифинг Часть 2, §4.3). Из неё строится глоссарий.
+_TERM_MARKUP = re.compile(r"\*\*\[(.+?)\]\{(.+?)\}\*\*", re.DOTALL)
 
 
 class ContextToolError(Exception):
@@ -250,3 +280,357 @@ def get_chapter(
         "title": title,
         "content": content,
     }
+
+
+# ─── вспомогательное: YAML-фронтматтер ────────────────────────────────
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Разобрать YAML-фронтматтер в начале Markdown-файла.
+
+    Формат::
+
+        ---
+        id: open_self_deprecation
+        russian_name: ...
+        ---
+        тело документа
+
+    Делаем разбор сами (не через python-frontmatter), чтобы не тащить
+    лишнюю зависимость: формат тривиален, а сервер должен быть лёгким
+    (брифинг Часть 1, §6 «зависимости минимальны»).
+
+    Args:
+        text: полный текст файла.
+
+    Returns:
+        ``(metadata, body)``. Если фронтматтера нет — ``({}, text)``.
+
+    Raises:
+        ContextToolError: если фронтматтер открыт ``---``, но YAML внутри
+            невалиден либо не является словарём.
+    """
+    stripped = text.lstrip("﻿")  # убрать возможный BOM
+    lines = stripped.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            fm_text = "\n".join(lines[1:i])
+            body = "\n".join(lines[i + 1 :]).lstrip("\n")
+            try:
+                meta = yaml.safe_load(fm_text) or {}
+            except yaml.YAMLError as e:
+                raise ContextToolError(f"невалидный YAML-фронтматтер: {e}") from e
+            if not isinstance(meta, dict):
+                raise ContextToolError(
+                    f"фронтматтер должен быть словарём, "
+                    f"получено {type(meta).__name__}"
+                )
+            return meta, body
+    # Открывающий "---" есть, закрывающего нет — считаем, что это просто
+    # горизонтальная черта, а не фронтматтер.
+    return {}, text
+
+
+# ─── вспомогательное: обход metadata.json глав ────────────────────────
+
+
+def _iter_chapter_metadata(root: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+    """Пройти по всем ``chapters/chapter_NN/metadata.json``.
+
+    Yields:
+        Пары ``(chapter_number, metadata_dict)`` в порядке возрастания
+        номера. Битый JSON или нечисловое имя папки — пропускаются с
+        предупреждением в лог (один сломанный файл не должен ронять обход).
+    """
+    chapters_dir = root / _CHAPTERS
+    if not chapters_dir.is_dir():
+        return
+    by_num: dict[int, Path] = {}
+    for md_path in chapters_dir.glob("chapter_*/metadata.json"):
+        name = md_path.parent.name.removeprefix("chapter_")
+        try:
+            by_num[int(name)] = md_path
+        except ValueError:
+            log.warning("пропускаю папку с нечисловым номером: %s", md_path.parent)
+    for num in sorted(by_num):
+        md_path = by_num[num]
+        try:
+            data = json.loads(cache.read_text(md_path))
+        except FileNotFoundError:
+            continue
+        except json.JSONDecodeError as e:
+            log.warning("пропускаю невалидный metadata.json %s: %s", md_path, e)
+            continue
+        if isinstance(data, dict):
+            yield num, data
+
+
+# ─── get_chapter_plan ─────────────────────────────────────────────────
+
+
+def get_chapter_plan(root: Path, chapter_number: int) -> dict[str, Any]:
+    """Вернуть план главы целиком — содержимое ``metadata.json``.
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Распарсенный объект ``chapters/chapter_NN/metadata.json``.
+
+    Raises:
+        ContentNotFoundError: если ``metadata.json`` главы отсутствует
+            (план ещё не составлен).
+        ContextToolError: если JSON невалиден или это не объект.
+
+    Example:
+        >>> plan = get_chapter_plan(Path("D:/projects/linalg-book"), 4)
+        >>> plan["chapter_number"]
+        4
+    """
+    path = _chapter_dir(root, chapter_number) / "metadata.json"
+    try:
+        raw = cache.read_text(path)
+    except FileNotFoundError as e:
+        raise ContentNotFoundError(
+            f"metadata.json для главы {chapter_number} не найден ({path}). "
+            f"План главы ещё не составлен?"
+        ) from e
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ContextToolError(
+            f"metadata.json главы {chapter_number} — невалидный JSON: {e}"
+        ) from e
+    if not isinstance(data, dict):
+        raise ContextToolError(
+            f"metadata.json главы {chapter_number} должен быть объектом, "
+            f"получено {type(data).__name__}"
+        )
+    return data
+
+
+# ─── get_pending_promises ─────────────────────────────────────────────
+
+
+def get_pending_promises(root: Path, for_chapter: int) -> list[dict[str, Any]]:
+    """Вернуть обещания, которые должны быть отработаны в главе ``for_chapter``.
+
+    Каждый мостик (``bridge_to_next.promises`` в ``metadata.json``) даёт
+    обещания для **следующей** главы. Поэтому обещания, висящие на главе
+    N, — это ``promises`` из главы N−1.
+
+    Сервер не отслеживает факт выполнения обещаний (это делает
+    ``check_promises`` уже на этапе проверки готового черновика). Здесь —
+    только «что было обещано к этой главе».
+
+    Args:
+        root: корень репозитория.
+        for_chapter: номер главы, для которой собираем обещания.
+
+    Returns:
+        Список словарей ``{promise, made_in_chapter, due_in_chapter,
+        section_of_origin}``. Пустой, если предыдущая глава ничего не
+        обещала (или её ещё нет).
+
+    Example:
+        >>> get_pending_promises(Path("D:/projects/linalg-book"), 5)
+        [{'promise': 'обратная матрица ...', 'made_in_chapter': 4,
+          'due_in_chapter': 5, 'section_of_origin': 'bridge_to_next'}, ...]
+    """
+    result: list[dict[str, Any]] = []
+    for num, data in _iter_chapter_metadata(root):
+        due_in = num + 1
+        if due_in != for_chapter:
+            continue
+        bridge = data.get("bridge_to_next")
+        promises = bridge.get("promises") if isinstance(bridge, dict) else None
+        if not isinstance(promises, list):
+            continue
+        for promise in promises:
+            if not isinstance(promise, str):
+                continue
+            result.append(
+                {
+                    "promise": promise,
+                    "made_in_chapter": num,
+                    "due_in_chapter": due_in,
+                    "section_of_origin": "bridge_to_next",
+                }
+            )
+    return result
+
+
+# ─── get_glossary ─────────────────────────────────────────────────────
+
+
+def get_glossary(root: Path) -> list[dict[str, Any]]:
+    """Собрать глоссарий из разметки терминов в главах.
+
+    Источник истины — разметка ``**[термин]{определение}**`` прямо в
+    тексте глав (брифинг Часть 2, §4.3), а не производный
+    ``book_meta/glossary.md`` (его генерирует ``metadata_builder.py`` для
+    вёрстки книги). Так глоссарий всегда синхронен с актуальным текстом,
+    а функция остаётся детерминированной и структурированной.
+
+    Для каждой главы берётся ``chapter.md`` (либо ``draft.md``, если
+    финальной версии ещё нет). Термин фиксируется по **первому** появлению.
+
+    Args:
+        root: корень репозитория.
+
+    Returns:
+        Список ``{term, definition, introduced_in}`` в порядке первого
+        появления (по возрастанию номера главы). Пустой, если разметки
+        терминов ещё нет.
+    """
+    chapters_dir = root / _CHAPTERS
+    if not chapters_dir.is_dir():
+        return []
+    nums: list[int] = []
+    for d in chapters_dir.glob("chapter_*"):
+        if d.is_dir():
+            try:
+                nums.append(int(d.name.removeprefix("chapter_")))
+            except ValueError:
+                continue
+    seen: dict[str, dict[str, Any]] = {}
+    for num in sorted(nums):
+        try:
+            path, _ = _resolve_chapter_file(_chapter_dir(root, num))
+        except ContentNotFoundError:
+            continue
+        text = cache.read_text(path)
+        for match in _TERM_MARKUP.finditer(text):
+            term = match.group(1).strip()
+            definition = match.group(2).strip()
+            if term not in seen:
+                seen[term] = {
+                    "term": term,
+                    "definition": definition,
+                    "introduced_in": num,
+                }
+    return list(seen.values())
+
+
+# ─── get_patterns_for_phase ───────────────────────────────────────────
+
+
+def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
+    """Вернуть паттерны изложения для конкретной фазы главы.
+
+    Читает ``patterns/<phase>/*.md``, разбирает YAML-фронтматтер каждого
+    файла. Тело файла (полную инструкцию) не возвращает — для неё есть
+    :func:`get_pattern_details`.
+
+    Args:
+        root: корень репозитория.
+        phase: одна из фаз: ``global``, ``chapter_opening``,
+            ``introducing_concept``, ``deriving_formula``, ``climax``,
+            ``biohazards``, ``pauses``, ``chapter_closing``, ``tasks``,
+            ``book_level``.
+
+    Returns:
+        Список словарей с полями фронтматтера (``id``, ``russian_name``,
+        ``task_type``, ``frequency``, ``summary``, ``when_to_apply``,
+        ``when_not_to_apply``, ``example``). Отсутствующие поля — ``None``.
+        Если папки фазы ещё нет — пустой список.
+
+    Raises:
+        ContextToolError: если ``phase`` — неизвестное имя фазы.
+    """
+    if phase not in _PHASE_DIRS:
+        valid = ", ".join(_PHASE_DIRS)
+        raise ContextToolError(
+            f"Неизвестная фаза «{phase}». Допустимые: {valid}."
+        )
+    phase_dir = root / _PATTERNS / _PHASE_DIRS[phase]
+    if not phase_dir.is_dir():
+        log.info("get_patterns_for_phase: каталог %s отсутствует", phase_dir)
+        return []
+    result: list[dict[str, Any]] = []
+    for md_path in sorted(phase_dir.glob("*.md")):
+        meta, _ = _parse_frontmatter(cache.read_text(md_path))
+        result.append(
+            {
+                "id": meta.get("id") or md_path.stem,
+                "russian_name": meta.get("russian_name"),
+                "task_type": meta.get("task_type"),
+                "frequency": meta.get("frequency"),
+                "summary": meta.get("summary"),
+                "when_to_apply": meta.get("when_to_apply"),
+                "when_not_to_apply": meta.get("when_not_to_apply"),
+                "example": meta.get("example"),
+            }
+        )
+    return result
+
+
+# ─── get_pattern_details ──────────────────────────────────────────────
+
+
+def get_pattern_details(root: Path, pattern_id: str) -> str:
+    """Вернуть полный Markdown-текст файла паттерна по его ID.
+
+    Ищет файл по всему дереву ``patterns/``: сперва по имени файла
+    (``<pattern_id>.md``), затем по полю ``id`` во фронтматтере. Возвращает
+    содержимое файла целиком, включая раздел «Инструкция для LLM».
+
+    Args:
+        root: корень репозитория.
+        pattern_id: идентификатор паттерна (например, ``biohazard_marker``).
+
+    Returns:
+        Полный текст файла паттерна.
+
+    Raises:
+        ContentNotFoundError: если каталога ``patterns/`` нет или паттерн
+            с таким ID не найден.
+    """
+    patterns_root = root / _PATTERNS
+    if not patterns_root.is_dir():
+        raise ContentNotFoundError(
+            f"Каталог patterns/ отсутствует ({patterns_root}). "
+            f"Паттерны ещё не добавлены."
+        )
+    candidates = sorted(patterns_root.glob("**/*.md"))
+    # 1) по имени файла — самый частый и дешёвый случай.
+    for md_path in candidates:
+        if md_path.stem == pattern_id:
+            return cache.read_text(md_path)
+    # 2) по полю id во фронтматтере.
+    for md_path in candidates:
+        text = cache.read_text(md_path)
+        meta, _ = _parse_frontmatter(text)
+        if meta.get("id") == pattern_id:
+            return text
+    raise ContentNotFoundError(
+        f"Паттерн «{pattern_id}» не найден в patterns/. "
+        f"Проверьте id (поле frontmatter ``id:`` или имя файла без .md)."
+    )
+
+
+# ─── get_conflicts_table ──────────────────────────────────────────────
+
+
+def get_conflicts_table(root: Path) -> str:
+    """Вернуть таблицу конфликтов паттернов из ``patterns/00_conflicts.md``.
+
+    Args:
+        root: корень репозитория.
+
+    Returns:
+        Markdown-текст файла (таблица несовместимых паттернов).
+
+    Raises:
+        ContentNotFoundError: если файла нет.
+    """
+    path = root / _PATTERNS / "00_conflicts.md"
+    try:
+        return cache.read_text(path)
+    except FileNotFoundError as e:
+        raise ContentNotFoundError(
+            f"Таблица конфликтов не найдена ({path})."
+        ) from e

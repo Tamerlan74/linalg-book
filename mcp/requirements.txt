@@ -7,12 +7,11 @@
 mcp[cli]>=1.2.0
 
 # Чтение book_meta/*.yaml (book_info.yaml и будущие synonyms.yaml,
-# technical_vocabulary.yaml, checks_config.yaml).
+# technical_vocabulary.yaml, checks_config.yaml), а также YAML-фронтматтера
+# файлов паттернов. Фронтматтер разбираем сами поверх pyyaml
+# (context_tools._parse_frontmatter) — отдельный python-frontmatter не нужен,
+# формат тривиален, а зависимости держим минимальными.
 pyyaml>=6.0
-
-# Парсинг YAML-фронтматтера файлов паттернов (понадобится в Группе A
-# при реализации get_patterns_for_phase; добавлено заранее).
-python-frontmatter>=1.0
 
 # Тесты.
 pytest>=7.0

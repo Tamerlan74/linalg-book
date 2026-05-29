@@ -1,9 +1,11 @@
 """MCP-сервер linalg-book-mcp — внешнее хранилище контекста книги.
 
-Каркас + три базовые функции Группы A (Часть 0 брифинга, §17):
-``get_book_info``, ``get_style_guide``, ``get_chapter``. Этого достаточно,
-чтобы автор проверил: Claude в чате claude.ai реально видит сервер и
-получает от него данные книги.
+Реализована вся Группа A — предоставление контекста (Часть 0 брифинга,
+§6): ``get_book_info``, ``get_style_guide``, ``get_chapter``,
+``get_chapter_plan``, ``get_pending_promises``, ``get_glossary``,
+``get_patterns_for_phase``, ``get_pattern_details``, ``get_conflicts_table``.
+Этого достаточно, чтобы Claude в чате claude.ai получал от сервера весь
+контекст книги по требованию. Группа B (проверки) — следующими сеансами.
 
 Архитектура:
 - Используется **FastMCP** (высокоуровневый API SDK), как в рабочем
@@ -95,6 +97,87 @@ def get_chapter(chapter_number: int, section: str = "all") -> dict[str, Any]:
     """
     log.info("tool: get_chapter(chapter_number=%s, section=%s)", chapter_number, section)
     return context_tools.get_chapter(REPO_ROOT, chapter_number, section)
+
+
+@mcp.tool()
+def get_chapter_plan(chapter_number: int) -> dict[str, Any]:
+    """План главы целиком — содержимое её metadata.json.
+
+    Используй, когда автор просит «продолжить главу N» и у главы уже есть
+    начатый план (разделы, обещания, новые термины, биохазарды).
+
+    Args:
+        chapter_number: номер главы (1, 2, ...).
+    """
+    log.info("tool: get_chapter_plan(chapter_number=%s)", chapter_number)
+    return context_tools.get_chapter_plan(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
+def get_pending_promises(for_chapter: int) -> list[dict[str, Any]]:
+    """Обещания из мостика предыдущей главы, которые надо отработать сейчас.
+
+    Вызывай при планировании новой главы: какие обещания (из
+    «Мостика к следующей главе» предыдущей главы) она должна выполнить.
+
+    Args:
+        for_chapter: номер главы, которую планируешь писать.
+    """
+    log.info("tool: get_pending_promises(for_chapter=%s)", for_chapter)
+    return context_tools.get_pending_promises(REPO_ROOT, for_chapter)
+
+
+@mcp.tool()
+def get_glossary() -> list[dict[str, Any]]:
+    """Глоссарий уже введённых терминов: term, definition, introduced_in.
+
+    Вызывай, чтобы не вводить термин повторно и использовать тот же
+    вариант термина, что был в предыдущих главах. Собирается из разметки
+    **[термин]{определение}** в тексте глав.
+    """
+    log.info("tool: get_glossary")
+    return context_tools.get_glossary(REPO_ROOT)
+
+
+@mcp.tool()
+def get_patterns_for_phase(phase: str) -> list[dict[str, Any]]:
+    """Паттерны изложения для конкретной фазы главы (краткие карточки).
+
+    Вызывай, планируя, какие приёмы применить в очередном разделе.
+    Полную инструкцию по паттерну бери через get_pattern_details(id).
+
+    Args:
+        phase: одна из фаз — global, chapter_opening, introducing_concept,
+            deriving_formula, climax, biohazards, pauses, chapter_closing,
+            tasks, book_level.
+    """
+    log.info("tool: get_patterns_for_phase(phase=%s)", phase)
+    return context_tools.get_patterns_for_phase(REPO_ROOT, phase)
+
+
+@mcp.tool()
+def get_pattern_details(pattern_id: str) -> str:
+    """Полный текст конкретного паттерна по его ID (включая инструкцию LLM).
+
+    Вызывай, когда нужны детали применения паттерна, найденного через
+    get_patterns_for_phase.
+
+    Args:
+        pattern_id: идентификатор паттерна, например "biohazard_marker".
+    """
+    log.info("tool: get_pattern_details(pattern_id=%s)", pattern_id)
+    return context_tools.get_pattern_details(REPO_ROOT, pattern_id)
+
+
+@mcp.tool()
+def get_conflicts_table() -> str:
+    """Таблица конфликтов между паттернами (Markdown).
+
+    Вызывай при подборе паттернов для главы, чтобы не комбинировать
+    конфликтующие приёмы.
+    """
+    log.info("tool: get_conflicts_table")
+    return context_tools.get_conflicts_table(REPO_ROOT)
 
 
 # ─── Точка входа ──────────────────────────────────────────────────────
