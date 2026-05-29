@@ -5,7 +5,12 @@
 ``get_chapter_plan``, ``get_pending_promises``, ``get_glossary``,
 ``get_patterns_for_phase``, ``get_pattern_details``, ``get_conflicts_table``.
 Этого достаточно, чтобы Claude в чате claude.ai получал от сервера весь
-контекст книги по требованию. Группа B (проверки) — следующими сеансами.
+контекст книги по требованию.
+
+Группа B (проверки готовой главы) — первый срез: ``check_structure``,
+``check_markers``, ``verify_chapter`` (оркестратор). Вычисления — в
+``tools/verify_tools.py``. Остальные проверки добавятся следующими
+срезами.
 
 Архитектура:
 - Используется **FastMCP** (высокоуровневый API SDK), как в рабочем
@@ -41,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402  (после sys.path)
 
 import config  # noqa: E402
-from tools import context_tools  # noqa: E402
+from tools import context_tools, verify_tools  # noqa: E402
 
 # ─── Логирование строго в stderr ──────────────────────────────────────
 logging.basicConfig(
@@ -178,6 +183,54 @@ def get_conflicts_table() -> str:
     """
     log.info("tool: get_conflicts_table")
     return context_tools.get_conflicts_table(REPO_ROOT)
+
+
+# ─── Группа B: проверки готовой главы ─────────────────────────────────
+
+
+@mcp.tool()
+def check_structure(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить структуру главы против её плана (metadata.json).
+
+    Сверяет прозу с планом: есть ли H1, все ли заявленные разделы на
+    месте и в правильном порядке, совпадают ли заголовки, есть ли итог
+    и мостик. Возвращает список находок (severity error/warning/info).
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_structure(chapter_number=%s)", chapter_number)
+    return verify_tools.check_structure(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
+def check_markers(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить маркеры биохазарда ⚠ в главе.
+
+    Сверяет число ⚠ с планом (biohazards_in_chapter), частоту — с
+    паттерном biohazard_marker, и стоят ли маркеры в начале блока.
+    Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_markers(chapter_number=%s)", chapter_number)
+    return verify_tools.check_markers(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
+def verify_chapter(chapter_number: int) -> dict[str, Any]:
+    """Запустить все проверки главы и вернуть сводный отчёт.
+
+    Оркестратор: прогоняет check_structure и check_markers, агрегирует
+    находки, считает error/warning/info и выдаёт вердикт ok/warn/fail.
+    Вызывай после написания черновика главы.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: verify_chapter(chapter_number=%s)", chapter_number)
+    return verify_tools.verify_chapter(REPO_ROOT, chapter_number)
 
 
 # ─── Точка входа ──────────────────────────────────────────────────────
