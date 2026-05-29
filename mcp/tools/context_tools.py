@@ -333,6 +333,55 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return {}, text
 
 
+def _extract_h1_section(
+    body: str,
+    *aliases: str,
+    prefix: str | None = None,
+) -> str | None:
+    """Вернуть текст H1-раздела тела паттерна по заголовку.
+
+    Тела паттернов размечены H1-заголовками (``# Суть``,
+    ``# Когда применять`` …). Берём тело раздела (без строки заголовка)
+    от совпавшего заголовка до следующего H1.
+
+    Сопоставление регистронезависимое: либо точное совпадение с одним из
+    ``aliases``, либо (если задан ``prefix``) — заголовок начинается с
+    ``prefix`` (для разнородных «Пример из главы N»). Строки внутри
+    ``` ```-ограждённых блоков кода не считаются заголовками.
+
+    Returns:
+        Текст раздела или ``None``, если ни один заголовок не подошёл
+        (или раздел пуст).
+    """
+    targets = {a.strip().lower() for a in aliases}
+    pref = prefix.strip().lower() if prefix else None
+
+    def is_target(heading: str) -> bool:
+        h = heading.strip().lower()
+        return h in targets or (pref is not None and h.startswith(pref))
+
+    collecting = False
+    collected: list[str] = []
+    in_fence = False
+    for line in body.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            if collecting:
+                collected.append(line)
+            continue
+        if not in_fence and line.startswith("# "):
+            if collecting:
+                break  # следующий H1 — конец нашего раздела
+            if is_target(line[2:]):
+                collecting = True
+            continue
+        if collecting:
+            collected.append(line)
+    if not collecting:
+        return None
+    return "\n".join(collected).strip() or None
+
+
 # ─── вспомогательное: обход metadata.json глав ────────────────────────
 
 
@@ -521,9 +570,22 @@ def get_glossary(root: Path) -> list[dict[str, Any]]:
 def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
     """Вернуть паттерны изложения для конкретной фазы главы.
 
-    Читает ``patterns/<phase>/*.md``, разбирает YAML-фронтматтер каждого
-    файла. Тело файла (полную инструкцию) не возвращает — для неё есть
-    :func:`get_pattern_details`.
+    Читает ``patterns/<phase>/*.md``, разбирает YAML-фронтматтер и тело
+    каждого файла. Возвращает карточку-сводку; полную инструкцию («тело»)
+    не отдаёт — для неё есть :func:`get_pattern_details`.
+
+    Поля собираются устойчиво к двум форматам паттернов, встречающимся в
+    репозитории: ключ берётся из фронтматтера, а если его там нет —
+    из соответствующего H1-раздела тела:
+
+    - ``task_type``        ← ``task_type`` | ``category``;
+    - ``frequency``        ← ``frequency`` | ``frequency_per_chapter`` |
+      ``frequency_per_book``;
+    - ``summary``          ← ``summary`` | раздел ``# Суть`` / ``# Описание``;
+    - ``when_to_apply``    ← ``when_to_apply`` | раздел ``# Когда применять``;
+    - ``when_not_to_apply``← ``when_not_to_apply`` |
+      раздел ``# Когда не применять`` / ``# Не применять``;
+    - ``example``          ← ``example`` | первый раздел ``# Пример …``.
 
     Args:
         root: корень репозитория.
@@ -533,10 +595,10 @@ def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
             ``book_level``.
 
     Returns:
-        Список словарей с полями фронтматтера (``id``, ``russian_name``,
-        ``task_type``, ``frequency``, ``summary``, ``when_to_apply``,
-        ``when_not_to_apply``, ``example``). Отсутствующие поля — ``None``.
-        Если папки фазы ещё нет — пустой список.
+        Список словарей с полями ``id``, ``russian_name``, ``task_type``,
+        ``frequency``, ``summary``, ``when_to_apply``, ``when_not_to_apply``,
+        ``example``. Отсутствующие поля — ``None``. Если папки фазы ещё
+        нет — пустой список.
 
     Raises:
         ContextToolError: если ``phase`` — неизвестное имя фазы.
@@ -552,17 +614,27 @@ def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
         return []
     result: list[dict[str, Any]] = []
     for md_path in sorted(phase_dir.glob("*.md")):
-        meta, _ = _parse_frontmatter(cache.read_text(md_path))
+        meta, body = _parse_frontmatter(cache.read_text(md_path))
         result.append(
             {
                 "id": meta.get("id") or md_path.stem,
                 "russian_name": meta.get("russian_name"),
-                "task_type": meta.get("task_type"),
-                "frequency": meta.get("frequency"),
-                "summary": meta.get("summary"),
-                "when_to_apply": meta.get("when_to_apply"),
-                "when_not_to_apply": meta.get("when_not_to_apply"),
-                "example": meta.get("example"),
+                "task_type": meta.get("task_type") or meta.get("category"),
+                "frequency": (
+                    meta.get("frequency")
+                    or meta.get("frequency_per_chapter")
+                    or meta.get("frequency_per_book")
+                ),
+                "summary": meta.get("summary")
+                or _extract_h1_section(body, "Суть", "Описание"),
+                "when_to_apply": meta.get("when_to_apply")
+                or _extract_h1_section(body, "Когда применять"),
+                "when_not_to_apply": meta.get("when_not_to_apply")
+                or _extract_h1_section(
+                    body, "Когда не применять", "Не применять"
+                ),
+                "example": meta.get("example")
+                or _extract_h1_section(body, prefix="Пример"),
             }
         )
     return result

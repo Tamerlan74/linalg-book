@@ -231,6 +231,68 @@ def test_get_patterns_for_phase_absent_dir_returns_empty(book_repo: Path) -> Non
     assert context_tools.get_patterns_for_phase(book_repo, "tasks") == []
 
 
+def test_get_patterns_for_phase_body_and_alias_fallback(tmp_path: Path) -> None:
+    """Поля берутся из тела и из ключей-синонимов, когда нет прямых.
+
+    Эмулируем «старый» формат паттерна из реального репо: ``category``
+    вместо ``task_type``, ``frequency_per_chapter`` вместо ``frequency``,
+    а ``summary`` / ``when_to_apply`` / ``when_not_to_apply`` / ``example``
+    лежат не во фронтматтере, а в H1-разделах тела (``# Суть`` и т. п.).
+    """
+    d = tmp_path / "patterns" / "02_introducing_concept"
+    d.mkdir(parents=True)
+    (d / "intro_legacy.md").write_text(
+        "---\n"
+        "id: T7\n"
+        "russian_name: Аналогия прежде символов\n"
+        "category: text_pattern\n"
+        "frequency_per_chapter: 1-2 раза\n"
+        "---\n\n"
+        "# Суть\n\n"
+        "Сначала простая аналогия, потом формула.\n\n"
+        "# Когда применять\n\n"
+        "При первом вводе абстрактного понятия.\n\n"
+        "# Когда не применять\n\n"
+        "В чисто справочном разделе.\n\n"
+        "# Пример из главы 3\n\n"
+        "«Вектор — как стрелка из начала координат».\n",
+        encoding="utf-8",
+    )
+    patterns = context_tools.get_patterns_for_phase(tmp_path, "introducing_concept")
+    assert len(patterns) == 1
+    p = patterns[0]
+    # id берётся из фронтматтера (даже если это «старый» код).
+    assert p["id"] == "T7"
+    # task_type ← category, frequency ← frequency_per_chapter.
+    assert p["task_type"] == "text_pattern"
+    assert p["frequency"] == "1-2 раза"
+    # summary / when_* / example извлечены из тела (H1-разделов).
+    assert "простая аналогия" in p["summary"]
+    assert "первом вводе" in p["when_to_apply"]
+    assert "справочном" in p["when_not_to_apply"]
+    assert "стрелка" in p["example"]
+
+
+def test_extract_h1_section_ignores_code_fence_headers() -> None:
+    """H1 внутри ```-блока не считается заголовком раздела."""
+    body = (
+        "# Суть\n\n"
+        "Текст сути.\n\n"
+        "```\n"
+        "# это комментарий в коде, не заголовок\n"
+        "```\n\n"
+        "ещё текст сути.\n\n"
+        "# Когда применять\n\n"
+        "Тело.\n"
+    )
+    summary = context_tools._extract_h1_section(body, "Суть")
+    assert summary is not None
+    assert "Текст сути" in summary
+    assert "ещё текст сути" in summary
+    assert "комментарий в коде" in summary  # код внутри раздела сохранён
+    assert "Тело" not in summary  # следующий H1 не попал
+
+
 # ─── get_pattern_details ──────────────────────────────────────────────
 
 
@@ -313,3 +375,35 @@ def test_real_glossary_is_list(real_repo: Path) -> None:
     """
     glossary = context_tools.get_glossary(real_repo)
     assert isinstance(glossary, list)
+
+
+def test_real_patterns_chapter_opening(real_repo: Path) -> None:
+    """Реальные паттерны фазы открытия читаются и карточки заполнены.
+
+    В репо 6 паттернов открытия. У каждого должны быть id и russian_name;
+    summary должен извлекаться у всех (из ``# Суть`` или ``# Описание``),
+    а task_type — хотя бы у большинства (фронтматтер ``task_type`` или
+    fallback на ``category``).
+    """
+    patterns = context_tools.get_patterns_for_phase(real_repo, "chapter_opening")
+    assert len(patterns) == 6
+    for p in patterns:
+        assert p["id"]
+        assert p["russian_name"]
+        assert p["summary"], f"нет summary у {p['id']}"
+    assert all(p["task_type"] for p in patterns)
+
+
+def test_real_pattern_details_biohazard_by_name_and_code(real_repo: Path) -> None:
+    """biohazard_marker находится и по имени файла, и по legacy-коду B3."""
+    by_name = context_tools.get_pattern_details(real_repo, "biohazard_marker")
+    assert "Биохазард" in by_name
+    by_code = context_tools.get_pattern_details(real_repo, "B3")
+    assert by_code == by_name
+
+
+def test_real_conflicts_table_parses(real_repo: Path) -> None:
+    """Таблица конфликтов читается и упоминает паттерны по имени файла."""
+    table = context_tools.get_conflicts_table(real_repo)
+    assert "CONFLICT" in table
+    assert "open_self_deprecation" in table
