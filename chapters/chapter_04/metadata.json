@@ -1,0 +1,110 @@
+{
+  "chapter_number": 4,
+  "chapter_title": "Умножение матриц — две инструкции, выполненные подряд",
+  "main_question": "что происходит, когда применяешь сначала одно преобразование, потом второе — и почему это записывается как умножение матриц",
+  "wow_moment": {
+    "what": "порядок умножения имеет значение, AB ≠ BA — и это не баг, это смысл",
+    "in_section": 4,
+    "secondary": "det(BA) = det(B) · det(A) — две растяжки накладываются"
+  },
+  "previous_promises_to_fulfill": [
+    "из главы 3: умножение матриц как композиция, объяснить через смысл, не через формулу",
+    "из главы 3: определитель произведения двух матриц"
+  ],
+  "sections": [
+    {
+      "number": 1,
+      "title": "Что значит — две инструкции подряд",
+      "what_it_does": "вводит идею композиции через сценку с тортом, даёт именованную модель",
+      "reading_time_min": 7,
+      "patterns_used": [
+        "open_story_first",
+        "intro_analogy_first",
+        "intro_named_model",
+        "intro_etymology"
+      ]
+    },
+    {
+      "number": 2,
+      "title": "Композиция — это ещё одна матрица",
+      "what_it_does": "показывает, что результат двух преобразований — тоже матрица; находит её через куда уехали i и j",
+      "reading_time_min": 7,
+      "patterns_used": [
+        "derive_geom_alongside"
+      ]
+    },
+    {
+      "number": 3,
+      "title": "Как считать: композиция через столбцы",
+      "what_it_does": "выводит формулу умножения через смысл",
+      "reading_time_min": 8,
+      "patterns_used": [
+        "derive_case_structure",
+        "derive_numerical_check",
+        "style_pronunciation"
+      ]
+    },
+    {
+      "number": 4,
+      "title": "⚠ Биохазард: порядок имеет значение",
+      "what_it_does": "контр-интуитивное место — AB ≠ BA, конкретный пример с буквой F",
+      "reading_time_min": 5,
+      "patterns_used": [
+        "biohazard_marker"
+      ]
+    },
+    {
+      "number": 5,
+      "title": "Определитель произведения — приятный подарок",
+      "what_it_does": "det(BA) = det B · det A через геометрию, без алгебры",
+      "reading_time_min": 6,
+      "patterns_used": [
+        "climax_paid_promise",
+        "tasks_sanity_check"
+      ]
+    },
+    {
+      "number": 6,
+      "title": "А что в трёх измерениях",
+      "what_it_does": "расширение до 3×3, демонстрация двух способов счёта",
+      "reading_time_min": 5,
+      "patterns_used": [
+        "tasks_multiple_solutions",
+        "derive_honest_skip"
+      ]
+    }
+  ],
+  "bridge_to_next": {
+    "summary": "у нас есть матрицы, определитель, умножение — можно ли матрицу разделить на матрицу?",
+    "promises": [
+      "обратная матрица как способ откатить преобразование",
+      "связь с системами линейных уравнений Mx = b"
+    ]
+  },
+  "new_terms_introduced": [
+    {
+      "term": "композиция инструкций",
+      "definition": "последовательное применение двух матриц-преобразований"
+    },
+    {
+      "term": "коммутативность",
+      "definition": "свойство операции a∗b = b∗a; для умножения матриц обычно не выполняется"
+    },
+    {
+      "term": "согласованность размеров",
+      "definition": "условие m=n для существования произведения матриц размеров p×n и m×k"
+    }
+  ],
+  "biohazards_in_chapter": [
+    {
+      "name": "порядок имеет значение",
+      "section": 4,
+      "description": "AB ≠ BA в общем случае; это не баг, а смысл"
+    },
+    {
+      "name": "согласованность размеров",
+      "section": 4,
+      "description": "перемножать можно только согласованные матрицы"
+    }
+  ]
+}

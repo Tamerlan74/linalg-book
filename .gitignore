@@ -5,6 +5,9 @@ __pycache__/
 .venv/
 venv/
 
+# IDE
+.idea/
+.vscode/
 # Generated book artifacts
 output/
 chapters/**/chapter.md

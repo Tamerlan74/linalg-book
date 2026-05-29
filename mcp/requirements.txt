@@ -1,0 +1,18 @@
+# Зависимости MCP-сервера linalg-book-mcp.
+# Минимальны намеренно: сервер только читает файлы репозитория и
+# проверяет их — никакого LLM, SymPy, БД (см. Часть 0 брифинга, §13).
+
+# MCP SDK от Anthropic. FastMCP-API живёт здесь (mcp.server.fastmcp).
+# Та же версия, что в рабочем starter-mcp автора.
+mcp[cli]>=1.2.0
+
+# Чтение book_meta/*.yaml (book_info.yaml и будущие synonyms.yaml,
+# technical_vocabulary.yaml, checks_config.yaml).
+pyyaml>=6.0
+
+# Парсинг YAML-фронтматтера файлов паттернов (понадобится в Группе A
+# при реализации get_patterns_for_phase; добавлено заранее).
+python-frontmatter>=1.0
+
+# Тесты.
+pytest>=7.0
