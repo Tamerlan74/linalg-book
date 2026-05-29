@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Generated book artifacts
+output/
+chapters/**/chapter.md
+chapters/**/images/
+
+# OS
+.DS_Store
+Thumbs.db
