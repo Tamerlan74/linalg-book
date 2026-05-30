@@ -1,8 +1,9 @@
 """Тесты функций Группы A (context_tools).
 
 Большинство тестов гоняются на программном мини-репо (фикстура
-``book_repo``). Два smoke-теста — на реальном репозитории, чтобы поймать
-поломку настоящего book_info.yaml / chapter_04.
+``book_repo``). Несколько smoke-тестов — на реальном репозитории, чтобы
+поймать поломку настоящего book_info.yaml, глоссария и библиотеки
+паттернов. Реальных глав в репозитории сейчас нет.
 """
 
 from __future__ import annotations
@@ -339,32 +340,8 @@ def test_real_book_info_parses(real_repo: Path) -> None:
     """Настоящий book_meta/book_info.yaml валиден и читается."""
     info = context_tools.get_book_info(real_repo)
     assert info["title"] == "Линейная алгебра, по-человечески"
-    assert info["total_chapters_written"] == 4
+    assert info["total_chapters_written"] == 0  # глав ещё нет; summary — плановый outline
     assert len(info["chapters_summary"]) == 4
-
-
-def test_real_chapter_04_parses(real_repo: Path) -> None:
-    """Настоящая глава 4 читается, заголовок и разделы на месте."""
-    ch = context_tools.get_chapter(real_repo, 4, "all")
-    assert ch["source"] == "chapter.md"
-    assert "Умножение матриц" in ch["title"]
-    bridge = context_tools.get_chapter(real_repo, 4, "bridge")
-    assert "обратной матрице" in bridge["content"].lower()
-
-
-def test_real_pending_promises_for_chapter_5(real_repo: Path) -> None:
-    """Из реального chapter_04/metadata.json висят 2 обещания на главу 5."""
-    promises = context_tools.get_pending_promises(real_repo, 5)
-    assert len(promises) == 2
-    assert all(p["made_in_chapter"] == 4 for p in promises)
-    assert all(p["due_in_chapter"] == 5 for p in promises)
-
-
-def test_real_chapter_04_plan(real_repo: Path) -> None:
-    """Настоящий chapter_04/metadata.json читается как план главы."""
-    plan = context_tools.get_chapter_plan(real_repo, 4)
-    assert plan["chapter_number"] == 4
-    assert "Умножение матриц" in plan["chapter_title"]
 
 
 def test_real_glossary_is_list(real_repo: Path) -> None:

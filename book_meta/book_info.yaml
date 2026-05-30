@@ -1,12 +1,13 @@
 # Общая информация о книге. Источник истины для get_book_info.
 # Заполняется и обновляется вручную автором (брифинг Часть 0, §6.1).
-# total_chapters_written и chapters_summary держим в актуальном состоянии
-# по мере написания глав.
+# total_chapters_written — сколько глав реально написано (растёт по мере написания).
+# chapters_summary — плановый outline книги (наполняется по мере уточнения плана,
+# не обязательно равен числу написанных глав).
 
 title: "Линейная алгебра, по-человечески"
 audience: "взрослый, работающий, забыл математику, готовится к ШАД"
 style: "гибрид Thompson (мягкий тон) + Savov (плотность) + Blitzstein (story-first)"
-total_chapters_written: 4
+total_chapters_written: 0
 
 chapters_summary:
   - number: 1

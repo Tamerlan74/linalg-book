@@ -1,9 +1,9 @@
 """Тесты Группы B — проверки главы (verify_tools).
 
-Синтетические главы во временной папке покрывают каждое правило точечно;
-в конце — smoke-тест против реальной главы 4, где проза намеренно
-рассогласована с metadata.json (отсутствует раздел 3, расходится
-заголовок раздела 5, число биохазардов не сходится).
+Синтетические главы во временной папке покрывают каждое правило точечно.
+Реальных глав в репозитории сейчас нет, поэтому из живых smoke остался лишь
+один — что шаблон `book_meta/terminology.yaml` парсится в пустой словарь.
+Smoke против настоящей главы вернётся, когда появится первая глава книги.
 """
 
 from __future__ import annotations
@@ -984,87 +984,14 @@ def test_load_checks_config_parses_and_normalizes(tmp_path: Path) -> None:
     assert cfg[("check_styleguide", "styleguide_formula_notation")] == "error"
 
 
-# ─── smoke против реального контента (глава 4) ────────────────────────
+# ─── smoke против реального book_meta ─────────────────────────────────
 
 
-def test_real_chapter4_structure_findings(real_repo: Path) -> None:
-    """Глава 4: проза опускает раздел 3 и расходится заголовком раздела 5."""
-    codes = _codes(verify_tools.check_structure(real_repo, 4))
-    assert "missing_section" in codes
-    assert "section_title_mismatch" in codes
+def test_real_terminology_template_empty(real_repo: Path) -> None:
+    """Реальный `book_meta/terminology.yaml` — пока только шаблон.
 
-
-def test_real_chapter4_markers_findings(real_repo: Path) -> None:
-    """Глава 4: в плане 2 биохазарда, в прозе один маркер ⚠."""
-    codes = _codes(verify_tools.check_markers(real_repo, 4))
-    assert "biohazard_count_mismatch" in codes
-
-
-def test_real_chapter4_terms_findings(real_repo: Path) -> None:
-    """Глава 4: в плане 3 новых термина, в прозе разметки нет вовсе."""
-    findings = verify_tools.check_terms(real_repo, 4)
-    not_marked = [f for f in findings if f["code"] == "term_not_marked"]
-    assert len(not_marked) == 3
-
-
-def test_real_chapter4_patterns_findings(real_repo: Path) -> None:
-    """Глава 4: intro_analogy_first + intro_etymology вместе в §1 → 1 redundancy."""
-    findings = verify_tools.check_patterns(real_repo, 4)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f["code"] == "pattern_redundancy"
-    assert f["severity"] == "info"
-    assert "intro_analogy_first" in f["message"]
-    assert "intro_etymology" in f["message"]
-
-
-def test_real_chapter4_verdict_fail(real_repo: Path) -> None:
-    report = verify_tools.verify_chapter(real_repo, 4)
-    assert report["verdict"] == "fail"
-    assert report["counts"]["error"] >= 1
-
-
-def test_real_chapter5_promises_findings(real_repo: Path) -> None:
-    """Глава 5: мостик главы 4 обещает 2 пункта, глава 5 подхватывает 1.
-
-    Фикстур chapters/chapter_05 намеренно перечисляет одно из двух
-    обещаний → ровно один promise_count_shortfall (info).
-    """
-    findings = verify_tools.check_promises(real_repo, 5)
-    sf = [f for f in findings if f["code"] == "promise_count_shortfall"]
-    assert len(sf) == 1
-    assert sf[0]["severity"] == "info"
-
-
-def test_real_chapter4_styleguide_clean(real_repo: Path) -> None:
-    """Глава 4 написана по стилгайду: ни канцелярита, ни \\times между числами.
-
-    Реальный смоук проверяет обратное синтетическим фикстурам — что
-    хорошая проза проходит без ложных срабатываний.
-    """
-    assert verify_tools.check_styleguide(real_repo, 4) == []
-
-
-def test_real_chapter4_links_findings(real_repo: Path) -> None:
-    """Глава 4: 5 картинок images/*.svg без файлов (нет папки images/) и
-
-    ссылка «из главы 3», для которой нет папки chapter_03 в фикстуре.
-    """
-    findings = verify_tools.check_links(real_repo, 4)
-    missing_img = [f for f in findings if f["code"] == "missing_image"]
-    broken_ref = [f for f in findings if f["code"] == "broken_chapter_ref"]
-    assert len(missing_img) == 5
-    assert all(f["severity"] == "error" for f in missing_img)
-    assert len(broken_ref) == 1
-    assert broken_ref[0]["severity"] == "warning"
-    assert "3" in broken_ref[0]["message"]
-
-
-def test_real_chapter4_terminology_clean(real_repo: Path) -> None:
-    """Реальный словарь — пока только шаблон без активных записей.
-
-    `book_meta/terminology.yaml` закомментирован, значит словарь пуст и
-    `check_terminology` молчит для любой главы.
+    Файл целиком закомментирован, значит контролируемый словарь пуст и
+    `check_terminology` молчит. Глав в репозитории сейчас нет, поэтому
+    проверяем словарь напрямую, без привязки к конкретной главе.
     """
     assert verify_tools._load_terminology(real_repo) == []
-    assert verify_tools.check_terminology(real_repo, 4) == []

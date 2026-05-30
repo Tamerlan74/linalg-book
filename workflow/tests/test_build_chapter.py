@@ -3,8 +3,9 @@
 Юнит-тесты ``validate_plan`` точечно бьют по каждому правилу схемы плана.
 Интеграционные тесты гоняют ``run_build`` с **замоканным** ``verify_chapter``
 (настоящий numeric_executor при этом работает по-настоящему — он локальный и
-быстрый), проверяя секвенирование стадий, гейты и сведе́ние вердикта. В конце —
-smoke против реальной главы 4 (legacy-путь без записи) с настоящим verify.
+быстрый), проверяя секвенирование стадий, гейты и сведе́ние вердикта. Реальной
+главы в репозитории сейчас нет, поэтому весь verify здесь замокан; smoke против
+живого контента вернётся, когда появится первая настоящая глава.
 """
 
 from __future__ import annotations
@@ -12,8 +13,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-
-import pytest
 
 # build_chapter сам добавляет scripts/ и mcp/ в sys.path при импорте.
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -391,20 +390,3 @@ def test_main_json_output(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["verdict"] == "ok"
     assert payload["chapter_number"] == 5
-
-
-# ─── smoke против реальной главы 4 (настоящий verify, без записи) ──────
-
-
-def test_build_real_chapter4_legacy_fail():
-    """Глава 4 — legacy (есть chapter.md, нет draft.md): numeric пропускается,
-
-    настоящий verify_chapter находит рассогласования → итог fail. Запись не
-    производится (нет draft.md), реальный репозиторий не меняется.
-    """
-    repo = Path(bc.__file__).resolve().parents[2]
-    if not (repo / "chapters" / "chapter_04" / "chapter.md").is_file():
-        pytest.skip("нет реальной главы 4")
-    report = bc.run_build(repo, 4)
-    assert report["stages"]["numeric"]["ran"] is False
-    assert report["verdict"] == "fail"
