@@ -1,0 +1,47 @@
+# checks_config.yaml — точечная настройка строгости проверок Группы B.
+#
+# Дефолтная строгость каждого кода захардкожена в mcp/tools/verify_tools.py
+# (docstring модуля содержит полную таблицу). Этот файл — РАЗРЕЖЕННЫЕ
+# оверрайды: перечисляй ТОЛЬКО те коды, чью строгость хочешь изменить.
+# Всё неупомянутое работает по дефолту.
+#
+# Формат:
+#   <имя_проверки>:
+#     <код>: <severity>
+#
+# severity ∈ error | warning | info | off
+#   error   — критично, роняет вердикт verify_chapter в fail
+#   warning — стоит поправить, вердикт warn
+#   info    — заметка, на вердикт не влияет
+#   off     — убрать находку из отчёта совсем (не считается нигде)
+#
+# Заметка про YAML: голый off разбирается как булево false. Можно писать
+# и так, и в кавычках "off" — обработается одинаково. Для наглядности
+# лучше кавычки.
+#
+# Если файла нет, он пуст, битый или код неизвестен — молча работают
+# дефолты, проверки не падают.
+#
+# Полный список кодов по проверкам:
+#   check_structure: missing_h1, missing_metadata, missing_section,
+#                    section_title_mismatch, sections_out_of_order,
+#                    duplicate_section, missing_summary, missing_bridge
+#   check_markers:   biohazard_count_mismatch, marker_frequency_exceeded,
+#                    marker_placement
+#   check_terms:     term_not_marked, unplanned_term_marked, term_reintroduced
+#   check_patterns:  pattern_unknown, pattern_conflict, pattern_redundancy
+#   check_promises:  promises_not_carried, promise_count_shortfall
+#   check_styleguide: styleguide_forbidden_phrase, styleguide_filler_word,
+#                     styleguide_formula_notation
+#   check_links:     missing_image, broken_chapter_ref
+#
+# ── Примеры (раскомментируй и поправь под себя) ──────────────────────
+#
+# check_terms:
+#   unplanned_term_marked: "off"          # не шуметь про незапланированные термины
+#
+# check_styleguide:
+#   styleguide_formula_notation: error    # \times между числами — это критично
+#
+# check_links:
+#   broken_chapter_ref: "off"             # пока главы мигрируются, ссылки вперёд — норма

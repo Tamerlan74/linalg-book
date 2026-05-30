@@ -756,6 +756,104 @@ def test_verify_missing_chapter_raises(tmp_path: Path) -> None:
         verify_tools.verify_chapter(tmp_path, 5)
 
 
+# ─── checks_config.yaml (строгость кодов) ─────────────────────────────
+
+
+# Глава с ровно одной находкой section_title_mismatch (warning): заголовок
+# раздела 2 в прозе расходится с планом _CLEAN_META.
+_MISMATCH_MD = _CLEAN_MD.replace("## 2. Второй раздел", "## 2. Другой заголовок")
+
+
+def _write_config(root: Path, yaml_text: str) -> None:
+    """Записать book_meta/checks_config.yaml во временное репо."""
+    meta = root / "book_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "checks_config.yaml").write_text(yaml_text, encoding="utf-8")
+
+
+def test_config_absent_keeps_default_severity(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["code"] == "section_title_mismatch"
+    assert f["severity"] == "warning"  # дефолт: конфига нет
+
+
+def test_config_remaps_severity(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_structure:\n  section_title_mismatch: error\n")
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["severity"] == "error"
+
+
+def test_config_off_drops_finding(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, 'check_structure:\n  section_title_mismatch: "off"\n')
+    assert verify_tools.check_structure(root, 5) == []
+
+
+def test_config_bare_off_is_boolean_false(tmp_path: Path) -> None:
+    """Голый off YAML разбирает как False — тоже трактуем как «убрать»."""
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_structure:\n  section_title_mismatch: off\n")
+    assert verify_tools.check_structure(root, 5) == []
+
+
+def test_config_unknown_severity_ignored(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_structure:\n  section_title_mismatch: bogus\n")
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["severity"] == "warning"  # неизвестная строгость → дефолт
+
+
+def test_config_malformed_yaml_uses_defaults(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_structure: : : не yaml\n")
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["severity"] == "warning"  # битый YAML → дефолт, без падения
+
+
+def test_config_unknown_check_code_is_noop(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_nonexistent:\n  whatever: error\n")
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["severity"] == "warning"
+
+
+def test_config_section_not_dict_ignored(tmp_path: Path) -> None:
+    root = _write(tmp_path, _MISMATCH_MD, metadata=_CLEAN_META)
+    _write_config(root, "check_structure: error\n")  # должна быть карта код→строгость
+    [f] = verify_tools.check_structure(root, 5)
+    assert f["severity"] == "warning"
+
+
+def test_config_off_changes_verdict_via_verify_chapter(tmp_path: Path) -> None:
+    root = _write(
+        tmp_path, _MISMATCH_MD, metadata=_CLEAN_META, biohazard_freq="2-3 раза"
+    )
+    assert verify_tools.verify_chapter(root, 5)["verdict"] == "warn"
+    _write_config(root, 'check_structure:\n  section_title_mismatch: "off"\n')
+    report = verify_tools.verify_chapter(root, 5)
+    assert report["verdict"] == "ok"
+    assert report["counts"] == {"error": 0, "warning": 0, "info": 0}
+
+
+def test_load_checks_config_absent_returns_empty(tmp_path: Path) -> None:
+    assert verify_tools._load_checks_config(tmp_path) == {}
+
+
+def test_load_checks_config_parses_and_normalizes(tmp_path: Path) -> None:
+    _write_config(
+        tmp_path,
+        "check_terms:\n"
+        "  unplanned_term_marked: off\n"
+        "check_styleguide:\n"
+        '  styleguide_formula_notation: "ERROR"\n',
+    )
+    cfg = verify_tools._load_checks_config(tmp_path)
+    assert cfg[("check_terms", "unplanned_term_marked")] == "off"
+    assert cfg[("check_styleguide", "styleguide_formula_notation")] == "error"
+
+
 # ─── smoke против реального контента (глава 4) ────────────────────────
 
 

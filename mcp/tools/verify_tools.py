@@ -40,8 +40,12 @@ r"""Группа B — проверки готовой главы (Часть 0 
         "location": "где именно" | None,
     }
 
-Коды и их строгость (захардкожены; ``checks_config.yaml`` появится, когда
-проверок станет достаточно, чтобы было что настраивать):
+Коды и их строгость по умолчанию (см. ниже). Дефолты можно точечно
+переопределить через ``book_meta/checks_config.yaml`` — разреженные
+оверрайды ``check → код → severity`` (``error`` / ``warning`` / ``info``,
+либо ``off`` — убрать находку из отчёта совсем). Файла нет / битый /
+неизвестный код → молча работают дефолты (см. :func:`_load_checks_config`,
+:func:`_configurable`):
 
 check_structure
     missing_h1              error    — нет H1-заголовка главы
@@ -88,13 +92,18 @@ check_links
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 import cache
 from tools.context_tools import (
+    _BOOK_META,
     _PATTERNS,
     _TERM_MARKUP,
     ContentNotFoundError,
@@ -216,9 +225,133 @@ def _biohazard_max_per_chapter(root: Path) -> int | None:
     return max(nums) if nums else None
 
 
+# ─── строгость кодов: book_meta/checks_config.yaml ────────────────────
+
+_CHECKS_CONFIG_FILE = "checks_config.yaml"
+
+# Допустимые значения строгости в конфиге. "off" — полностью убрать находку
+# из отчёта (не считается ни в error/warning/info, ни в вердикт).
+_VALID_SEVERITIES = frozenset({"error", "warning", "info", "off"})
+
+# Сигнатура любой проверки Группы B.
+_CheckFn = Callable[[Path, int], list[dict[str, Any]]]
+
+
+def _load_checks_config(root: Path) -> dict[tuple[str, str], str]:
+    """Прочитать ``book_meta/checks_config.yaml`` → карту оверрайдов строгости.
+
+    Конфиг **разреженный**: перечисляет только коды, чью строгость нужно
+    переопределить. Всё неупомянутое сохраняет дефолт, захардкоженный в коде.
+
+    Формат::
+
+        check_terms:
+          unplanned_term_marked: "off"        # убрать находку совсем
+        check_styleguide:
+          styleguide_formula_notation: error  # поднять строгость
+
+    Returns:
+        ``{(check, code): severity}``, severity ∈ {error, warning, info, off}.
+        Пустой словарь, если файла нет, он пуст или битый — тогда работают
+        дефолты, и ни одна проверка не падает из-за конфига.
+
+    Note:
+        Голый ``off`` YAML 1.1 разбирает как булево ``False`` (как ``no`` и
+        ``false``); такой ``False`` трактуем как «off». ``true``-подобные
+        значения для строгости бессмысленны и отвергаются с предупреждением.
+    """
+    path = root / _BOOK_META / _CHECKS_CONFIG_FILE
+    try:
+        raw = cache.read_text(path)
+    except FileNotFoundError:
+        return {}
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        log.warning("%s: невалидный YAML, игнорирую (%s)", _CHECKS_CONFIG_FILE, e)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    overrides: dict[tuple[str, str], str] = {}
+    for check, codes in data.items():
+        if not isinstance(codes, dict):
+            log.warning(
+                "%s: секция %r должна быть словарём код→строгость, пропускаю",
+                _CHECKS_CONFIG_FILE,
+                check,
+            )
+            continue
+        for code, sev in codes.items():
+            if sev is False:  # голый off/no/false из YAML 1.1
+                sev_norm = "off"
+            elif isinstance(sev, str):
+                sev_norm = sev.strip().lower()
+            else:
+                log.warning(
+                    "%s: строгость %r для %s/%s не строка, пропускаю",
+                    _CHECKS_CONFIG_FILE,
+                    sev,
+                    check,
+                    code,
+                )
+                continue
+            if sev_norm not in _VALID_SEVERITIES:
+                log.warning(
+                    "%s: неизвестная строгость %r для %s/%s "
+                    "(ожидалось error/warning/info/off), пропускаю",
+                    _CHECKS_CONFIG_FILE,
+                    sev,
+                    check,
+                    code,
+                )
+                continue
+            overrides[(str(check), str(code))] = sev_norm
+    return overrides
+
+
+def _apply_config(root: Path, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Применить оверрайды строгости к находкам проверки.
+
+    Переопределяет ``severity`` по карте :func:`_load_checks_config`; находки
+    со строгостью ``off`` выбрасываются из списка. Если оверрайдов нет —
+    возвращает находки без изменений.
+    """
+    overrides = _load_checks_config(root)
+    if not overrides:
+        return findings
+    out: list[dict[str, Any]] = []
+    for f in findings:
+        sev = overrides.get((f["check"], f["code"]))
+        if sev is None:
+            out.append(f)
+        elif sev == "off":
+            continue
+        else:
+            out.append({**f, "severity": sev})
+    return out
+
+
+def _configurable(check_fn: _CheckFn) -> _CheckFn:
+    """Декоратор: прогнать находки проверки через ``checks_config.yaml``.
+
+    Оборачивает ``check_*(root, chapter_number)`` так, что её находки проходят
+    через :func:`_apply_config`. ``functools.wraps`` сохраняет ``__name__`` —
+    ``verify_chapter`` по-прежнему видит верные имена в ``checks_run``, а
+    серверные обёртки одиночных проверок наследуют ту же настройку строгости.
+    """
+
+    @functools.wraps(check_fn)
+    def wrapper(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+        return _apply_config(root, check_fn(root, chapter_number))
+
+    return wrapper
+
+
 # ─── check_structure ──────────────────────────────────────────────────
 
 
+@_configurable
 def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить структуру прозы главы с её планом (``metadata.json``).
 
@@ -398,6 +531,7 @@ def _placement_ok(line: str) -> bool:
     return core.startswith(_MARKER)
 
 
+@_configurable
 def check_markers(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Проверить маркеры биохазарда ``⚠`` в главе.
 
@@ -495,6 +629,7 @@ def _planned_terms(meta: dict[str, Any]) -> list[str]:
     return terms
 
 
+@_configurable
 def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить термины главы: план ↔ разметка в прозе ↔ глоссарий.
 
@@ -682,6 +817,7 @@ def _parse_conflict_pairs(root: Path) -> list[dict[str, str]]:
     return pairs
 
 
+@_configurable
 def check_patterns(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить паттерны главы (``patterns_used``) с библиотекой и конфликтами.
 
@@ -798,6 +934,7 @@ def check_patterns(root: Path, chapter_number: int) -> list[dict[str, Any]]:
 # ─── check_promises ───────────────────────────────────────────────────
 
 
+@_configurable
 def check_promises(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить обещания мостика прошлой главы с тем, что эта глава подхватила.
 
@@ -919,6 +1056,7 @@ _FILLER_RE = tuple(
 _TIMES_BETWEEN_NUMBERS = re.compile(r"\d\s*\\times\s*\d")
 
 
+@_configurable
 def check_styleguide(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить прозу главы с механически проверяемой частью стилгайда.
 
@@ -1007,6 +1145,7 @@ _CHAPTER_REF_RE = re.compile(
 _EXTERNAL_IMAGE_PREFIXES = ("http://", "https://", "data:", "//")
 
 
+@_configurable
 def check_links(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     """Сверить ссылки прозы с тем, что реально есть на диске.
 
