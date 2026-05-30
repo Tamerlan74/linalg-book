@@ -100,7 +100,9 @@ def get_chapter(chapter_number: int, section: str = "all") -> dict[str, Any]:
             «Что мы теперь знаем»), "bridge" (раздел «Мостик к следующей
             главе»), либо номер раздела как строка ("1", "4").
     """
-    log.info("tool: get_chapter(chapter_number=%s, section=%s)", chapter_number, section)
+    log.info(
+        "tool: get_chapter(chapter_number=%s, section=%s)", chapter_number, section
+    )
     return context_tools.get_chapter(REPO_ROOT, chapter_number, section)
 
 

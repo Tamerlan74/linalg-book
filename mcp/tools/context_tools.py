@@ -165,8 +165,7 @@ def _resolve_chapter_file(chapter_dir: Path) -> tuple[Path, str]:
     if draft.is_file():
         return draft, "draft.md"
     raise ContentNotFoundError(
-        f"В {chapter_dir} нет ни chapter.md, ни draft.md. "
-        f"Глава ещё не написана?"
+        f"В {chapter_dir} нет ни chapter.md, ни draft.md. Глава ещё не написана?"
     )
 
 
@@ -324,8 +323,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
                 raise ContextToolError(f"невалидный YAML-фронтматтер: {e}") from e
             if not isinstance(meta, dict):
                 raise ContextToolError(
-                    f"фронтматтер должен быть словарём, "
-                    f"получено {type(meta).__name__}"
+                    f"фронтматтер должен быть словарём, получено {type(meta).__name__}"
                 )
             return meta, body
     # Открывающий "---" есть, закрывающего нет — считаем, что это просто
@@ -605,9 +603,7 @@ def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
     """
     if phase not in _PHASE_DIRS:
         valid = ", ".join(_PHASE_DIRS)
-        raise ContextToolError(
-            f"Неизвестная фаза «{phase}». Допустимые: {valid}."
-        )
+        raise ContextToolError(f"Неизвестная фаза «{phase}». Допустимые: {valid}.")
     phase_dir = root / _PATTERNS / _PHASE_DIRS[phase]
     if not phase_dir.is_dir():
         log.info("get_patterns_for_phase: каталог %s отсутствует", phase_dir)
@@ -630,9 +626,7 @@ def get_patterns_for_phase(root: Path, phase: str) -> list[dict[str, Any]]:
                 "when_to_apply": meta.get("when_to_apply")
                 or _extract_h1_section(body, "Когда применять"),
                 "when_not_to_apply": meta.get("when_not_to_apply")
-                or _extract_h1_section(
-                    body, "Когда не применять", "Не применять"
-                ),
+                or _extract_h1_section(body, "Когда не применять", "Не применять"),
                 "example": meta.get("example")
                 or _extract_h1_section(body, prefix="Пример"),
             }
@@ -703,6 +697,4 @@ def get_conflicts_table(root: Path) -> str:
     try:
         return cache.read_text(path)
     except FileNotFoundError as e:
-        raise ContentNotFoundError(
-            f"Таблица конфликтов не найдена ({path})."
-        ) from e
+        raise ContentNotFoundError(f"Таблица конфликтов не найдена ({path}).") from e

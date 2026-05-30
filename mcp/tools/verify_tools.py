@@ -210,7 +210,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     if not _has_h1(content):
         findings.append(
             _finding(
-                check, "error", "missing_h1",
+                check,
+                "error",
+                "missing_h1",
                 "В главе нет H1-заголовка (строки вида «# Глава N. …»).",
             )
         )
@@ -234,7 +236,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
         if num in seen:
             findings.append(
                 _finding(
-                    check, "warning", "duplicate_section",
+                    check,
+                    "warning",
+                    "duplicate_section",
                     f"Номер раздела {num} встречается в прозе более одного раза.",
                     location=f"## {num}.",
                 )
@@ -243,7 +247,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     if numbered != sorted(numbered):
         findings.append(
             _finding(
-                check, "warning", "sections_out_of_order",
+                check,
+                "warning",
+                "sections_out_of_order",
                 f"Номера разделов в прозе идут не по возрастанию: {numbered}.",
             )
         )
@@ -253,7 +259,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     if meta is None:
         findings.append(
             _finding(
-                check, "error", "missing_metadata",
+                check,
+                "error",
+                "missing_metadata",
                 "Нет metadata.json — план главы не с чем сверять.",
             )
         )
@@ -270,7 +278,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
                 if num not in prose_sections:
                     findings.append(
                         _finding(
-                            check, "error", "missing_section",
+                            check,
+                            "error",
+                            "missing_section",
                             f"Раздел {num} «{title}» есть в плане, "
                             f"но отсутствует в прозе.",
                             location=f"metadata: sections[number={num}]",
@@ -286,7 +296,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
                 ):
                     findings.append(
                         _finding(
-                            check, "warning", "section_title_mismatch",
+                            check,
+                            "warning",
+                            "section_title_mismatch",
                             f"Заголовок раздела {num}: в плане «{title}», "
                             f"в прозе «{prose_sections[num]}».",
                             location=f"## {num}.",
@@ -294,12 +306,16 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
                     )
 
         # 4) Раздел-итог.
-        if not any("что мы" in h.lower() and (
-            "знаем" in h.lower() or "узнали" in h.lower() or "поняли" in h.lower()
-        ) for h in headings):
+        if not any(
+            "что мы" in h.lower()
+            and ("знаем" in h.lower() or "узнали" in h.lower() or "поняли" in h.lower())
+            for h in headings
+        ):
             findings.append(
                 _finding(
-                    check, "warning", "missing_summary",
+                    check,
+                    "warning",
+                    "missing_summary",
                     "Нет раздела-итога («Что мы теперь знаем»).",
                 )
             )
@@ -309,7 +325,9 @@ def check_structure(root: Path, chapter_number: int) -> list[dict[str, Any]]:
             if not any("мостик" in h.lower() for h in headings):
                 findings.append(
                     _finding(
-                        check, "warning", "missing_bridge",
+                        check,
+                        "warning",
+                        "missing_bridge",
                         "План обещает bridge_to_next, но в прозе нет раздела "
                         "«Мостик к следующей главе».",
                     )
@@ -379,7 +397,9 @@ def check_markers(root: Path, chapter_number: int) -> list[dict[str, Any]]:
             if n_declared != marker_count:
                 findings.append(
                     _finding(
-                        check, "warning", "biohazard_count_mismatch",
+                        check,
+                        "warning",
+                        "biohazard_count_mismatch",
                         f"В плане заявлено биохазардов: {n_declared}, "
                         f"а маркеров ⚠ в прозе: {marker_count}.",
                     )
@@ -390,7 +410,9 @@ def check_markers(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     if cap is not None and marker_count > cap:
         findings.append(
             _finding(
-                check, "warning", "marker_frequency_exceeded",
+                check,
+                "warning",
+                "marker_frequency_exceeded",
                 f"Маркеров ⚠ в главе: {marker_count}, а паттерн "
                 f"biohazard_marker рекомендует не больше {cap}.",
             )
@@ -401,7 +423,9 @@ def check_markers(root: Path, chapter_number: int) -> list[dict[str, Any]]:
         if not _placement_ok(line):
             findings.append(
                 _finding(
-                    check, "info", "marker_placement",
+                    check,
+                    "info",
+                    "marker_placement",
                     "Маркер ⚠ должен стоять в начале блока или заголовка.",
                     location=f"строка {lineno}",
                 )
@@ -420,9 +444,7 @@ def _marked_terms(content: str) -> list[str]:
     повторами); определение игнорируем — здесь важен сам факт разметки.
     """
     return [
-        m.group(1).strip()
-        for m in _TERM_MARKUP.finditer(content)
-        if m.group(1).strip()
+        m.group(1).strip() for m in _TERM_MARKUP.finditer(content) if m.group(1).strip()
     ]
 
 
@@ -484,7 +506,9 @@ def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
         if _normalize_title(term) not in marked_norm:
             findings.append(
                 _finding(
-                    check, "warning", "term_not_marked",
+                    check,
+                    "warning",
+                    "term_not_marked",
                     f"Термин «{term}» заявлен в плане (new_terms_introduced), "
                     f"но не размечен в прозе как **[термин]{{определение}}**.",
                     location=f"metadata: new_terms_introduced[{term}]",
@@ -499,7 +523,9 @@ def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
             emitted_unplanned.add(n)
             findings.append(
                 _finding(
-                    check, "info", "unplanned_term_marked",
+                    check,
+                    "info",
+                    "unplanned_term_marked",
                     f"Термин «{term}» размечен в прозе, но его нет в плане "
                     f"(new_terms_introduced).",
                 )
@@ -517,7 +543,9 @@ def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
             emitted_reintro.add(n)
             findings.append(
                 _finding(
-                    check, "warning", "term_reintroduced",
+                    check,
+                    "warning",
+                    "term_reintroduced",
                     f"Термин «{term}» размечен в главе {chapter_number} как новый, "
                     f"но уже вводился в главе {first}.",
                 )
