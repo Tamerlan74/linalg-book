@@ -253,12 +253,29 @@ def check_patterns(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_promises(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить, подхватила ли глава обещания мостика предыдущей главы.
+
+    Сверяет bridge_to_next.promises главы N−1 с previous_promises_to_fulfill
+    главы N: потеряны ли обещания (ничего не подхвачено) или подхвачено
+    меньше пунктов, чем обещано. Бухгалтерия смежности, без семантической
+    сверки прозы. Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_promises(chapter_number=%s)", chapter_number)
+    return verify_tools.check_promises(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
-    Оркестратор: прогоняет check_structure, check_markers, check_terms и
-    check_patterns, агрегирует находки, считает error/warning/info и
-    выдаёт вердикт ok/warn/fail. Вызывай после написания черновика главы.
+    Оркестратор: прогоняет check_structure, check_markers, check_terms,
+    check_patterns и check_promises, агрегирует находки, считает
+    error/warning/info и выдаёт вердикт ok/warn/fail. Вызывай после
+    написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.

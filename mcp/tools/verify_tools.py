@@ -16,6 +16,9 @@
 - :func:`check_patterns`  — паттерны из плана (``sections[].patterns_used``)
   сверяются с библиотекой ``patterns/`` (неизвестные ID) и таблицей
   ``00_conflicts.md`` (конфликтующие/переигрывающие пары).
+- :func:`check_promises`  — обещания мостика предыдущей главы
+  (``bridge_to_next.promises``) сверяются с тем, что эта глава подхватила
+  в ``previous_promises_to_fulfill`` (бухгалтерия смежности, без семантики).
 - :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
@@ -59,6 +62,11 @@ check_patterns
     pattern_conflict        warning  — пара из таблицы CONFLICT сосуществует
     pattern_redundancy      info     — пара из таблицы REDUNDANCY сосуществует
 
+check_promises
+    promises_not_carried    warning  — мостик прошлой главы что-то обещал,
+                                       а эта глава ничего не подхватила
+    promise_count_shortfall info     — подхвачено меньше пунктов, чем обещано
+
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
 """
@@ -82,6 +90,7 @@ from tools.context_tools import (
     get_conflicts_table,
     get_glossary,
     get_pattern_details,
+    get_pending_promises,
 )
 
 log = logging.getLogger("linalg-book-mcp.verify_tools")
@@ -771,10 +780,102 @@ def check_patterns(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_promises ───────────────────────────────────────────────────
+
+
+def check_promises(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить обещания мостика прошлой главы с тем, что эта глава подхватила.
+
+    Каждый мостик (``bridge_to_next.promises`` главы N−1) даёт обещания,
+    которые глава N должна отработать. На стороне главы N эти обещания
+    перечисляются в ``previous_promises_to_fulfill`` плана. Эта проверка
+    сверяет **бухгалтерию смежности**, а не семантику прозы:
+
+    - ``promises_not_carried`` (warning) — мостик прошлой главы что-то
+      обещал, а в ``previous_promises_to_fulfill`` этой главы пусто (или
+      поля нет): обещания «потерялись» между главами.
+    - ``promise_count_shortfall`` (info) — глава подхватила меньше
+      пунктов, чем обещано мостиком: возможно, часть обещаний забыта.
+
+    Сознательно **без** фаззи/семантической сверки строк: совпадение
+    перефразированных русских формулировок без устойчивых ID ненадёжно и
+    уводит в LLM-территорию (а сервер детерминированный). Поэтому здесь —
+    только счёт и факт наличия.
+
+    Если предыдущей главы нет или она ничего не обещала — ``[]``. Если у
+    этой главы нет ``metadata.json`` — тоже ``[]`` (ошибку
+    ``missing_metadata`` выдаёт :func:`check_structure`).
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер проверяемой главы.
+
+    Returns:
+        Список находок. Пустой — обещания смежности в порядке.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    _read_chapter(root, chapter_number)  # guard: глава должна быть написана
+    check = "check_promises"
+
+    pending = get_pending_promises(root, chapter_number)
+    if not pending:
+        return []  # нет предыдущей главы / она ничего не обещала
+
+    meta = _load_meta(root, chapter_number)
+    if meta is None:
+        return []  # missing_metadata — забота check_structure
+
+    carried = meta.get("previous_promises_to_fulfill")
+    carried_list = (
+        [c for c in carried if isinstance(c, str) and c.strip()]
+        if isinstance(carried, list)
+        else []
+    )
+
+    made_in = pending[0]["made_in_chapter"]
+    n_pending = len(pending)
+    findings: list[dict[str, Any]] = []
+
+    if not carried_list:
+        findings.append(
+            _finding(
+                check,
+                "warning",
+                "promises_not_carried",
+                f"Глава {made_in} оставила в мостике {n_pending} обещаний, "
+                f"но глава {chapter_number} их не подхватила "
+                f"(previous_promises_to_fulfill пуст или отсутствует).",
+                location="metadata: previous_promises_to_fulfill",
+            )
+        )
+    elif len(carried_list) < n_pending:
+        findings.append(
+            _finding(
+                check,
+                "info",
+                "promise_count_shortfall",
+                f"Глава {made_in} оставила {n_pending} обещаний, а глава "
+                f"{chapter_number} перечисляет {len(carried_list)} пунктов в "
+                f"previous_promises_to_fulfill — проверьте, все ли подхвачены.",
+                location="metadata: previous_promises_to_fulfill",
+            )
+        )
+
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
-_ALL_CHECKS = (check_structure, check_markers, check_terms, check_patterns)
+_ALL_CHECKS = (
+    check_structure,
+    check_markers,
+    check_terms,
+    check_patterns,
+    check_promises,
+)
 
 
 def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
@@ -791,7 +892,8 @@ def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
               "chapter_number": N,
               "source": "chapter.md" | "draft.md",
               "checks_run": ["check_structure", "check_markers",
-                             "check_terms", "check_patterns"],
+                             "check_terms", "check_patterns",
+                             "check_promises"],
               "counts": {"error": E, "warning": W, "info": I},
               "verdict": "ok" | "warn" | "fail",
               "findings": [ ...все находки... ],

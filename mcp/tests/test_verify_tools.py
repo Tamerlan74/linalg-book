@@ -451,6 +451,84 @@ def test_patterns_no_library_no_findings(tmp_path: Path) -> None:
     assert verify_tools.check_patterns(root, 5) == []
 
 
+# ─── check_promises ───────────────────────────────────────────────────
+
+
+def _ch_with_promises(promises: list[str], *, n: int = 4) -> dict:
+    """metadata главы n с обещаниями в мостике."""
+    return {
+        "chapter_number": n,
+        "bridge_to_next": {"summary": "далее", "promises": promises},
+    }
+
+
+def test_promises_clean_carries_all_no_findings(tmp_path: Path) -> None:
+    # Глава 4 обещает 2 пункта, глава 5 подхватывает оба → молчим.
+    _write(
+        tmp_path, "# Глава 4\n\nтекст\n", metadata=_ch_with_promises(["a", "b"]), n=4
+    )
+    meta5 = {"chapter_number": 5, "previous_promises_to_fulfill": ["a", "b"]}
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata=meta5, n=5)
+    assert verify_tools.check_promises(root, 5) == []
+
+
+def test_promises_not_carried_is_warning(tmp_path: Path) -> None:
+    # Глава 4 обещает, глава 5 ничего не подхватывает (пустой список).
+    _write(
+        tmp_path, "# Глава 4\n\nтекст\n", metadata=_ch_with_promises(["a", "b"]), n=4
+    )
+    meta5 = {"chapter_number": 5, "previous_promises_to_fulfill": []}
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata=meta5, n=5)
+    findings = verify_tools.check_promises(root, 5)
+    nc = [f for f in findings if f["code"] == "promises_not_carried"]
+    assert len(nc) == 1
+    assert nc[0]["severity"] == "warning"
+
+
+def test_promises_not_carried_when_field_absent(tmp_path: Path) -> None:
+    # previous_promises_to_fulfill вообще нет в metadata → тоже warning.
+    _write(tmp_path, "# Глава 4\n\nтекст\n", metadata=_ch_with_promises(["a"]), n=4)
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata={"chapter_number": 5}, n=5)
+    assert "promises_not_carried" in _codes(verify_tools.check_promises(root, 5))
+
+
+def test_promises_shortfall_is_info(tmp_path: Path) -> None:
+    # Обещано 2, подхвачен 1 → info.
+    _write(
+        tmp_path, "# Глава 4\n\nтекст\n", metadata=_ch_with_promises(["a", "b"]), n=4
+    )
+    meta5 = {"chapter_number": 5, "previous_promises_to_fulfill": ["a"]}
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata=meta5, n=5)
+    findings = verify_tools.check_promises(root, 5)
+    sf = [f for f in findings if f["code"] == "promise_count_shortfall"]
+    assert len(sf) == 1
+    assert sf[0]["severity"] == "info"
+
+
+def test_promises_no_previous_chapter_no_findings(tmp_path: Path) -> None:
+    # Нет главы 4 → нечего сверять.
+    meta5 = {"chapter_number": 5, "previous_promises_to_fulfill": []}
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata=meta5, n=5)
+    assert verify_tools.check_promises(root, 5) == []
+
+
+def test_promises_previous_has_no_promises_no_findings(tmp_path: Path) -> None:
+    # Глава 4 есть, но её мостик ничего не обещает.
+    meta4 = {"chapter_number": 4, "bridge_to_next": {"summary": "далее"}}
+    _write(tmp_path, "# Глава 4\n\nтекст\n", metadata=meta4, n=4)
+    meta5 = {"chapter_number": 5, "previous_promises_to_fulfill": []}
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", metadata=meta5, n=5)
+    assert verify_tools.check_promises(root, 5) == []
+
+
+def test_promises_missing_metadata_no_findings(tmp_path: Path) -> None:
+    # Глава 4 обещает, но у главы 5 нет metadata.json → молчим
+    # (missing_metadata — забота check_structure, дублировать не нужно).
+    _write(tmp_path, "# Глава 4\n\nтекст\n", metadata=_ch_with_promises(["a"]), n=4)
+    root = _write(tmp_path, "# Глава 5\n\nтекст\n", n=5)  # без metadata
+    assert verify_tools.check_promises(root, 5) == []
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -464,6 +542,7 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
         "check_markers",
         "check_terms",
         "check_patterns",
+        "check_promises",
     ]
     assert report["source"] == "chapter.md"
 
@@ -531,3 +610,15 @@ def test_real_chapter4_verdict_fail(real_repo: Path) -> None:
     report = verify_tools.verify_chapter(real_repo, 4)
     assert report["verdict"] == "fail"
     assert report["counts"]["error"] >= 1
+
+
+def test_real_chapter5_promises_findings(real_repo: Path) -> None:
+    """Глава 5: мостик главы 4 обещает 2 пункта, глава 5 подхватывает 1.
+
+    Фикстур chapters/chapter_05 намеренно перечисляет одно из двух
+    обещаний → ровно один promise_count_shortfall (info).
+    """
+    findings = verify_tools.check_promises(real_repo, 5)
+    sf = [f for f in findings if f["code"] == "promise_count_shortfall"]
+    assert len(sf) == 1
+    assert sf[0]["severity"] == "info"
