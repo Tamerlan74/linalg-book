@@ -269,13 +269,30 @@ def check_promises(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_styleguide(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить прозу главы против механически проверяемой части стилгайда.
+
+    Ловит запрещённые канцелярские конструкции из стоп-списка стилгайда
+    (warning), связку-наполнитель «является» (info) и \\times между
+    числами вместо \\cdot (warning). Семантика (залог, тон, «голая»
+    математика) — вне охвата, это не для детерминированной проверки.
+    Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_styleguide(chapter_number=%s)", chapter_number)
+    return verify_tools.check_styleguide(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
     Оркестратор: прогоняет check_structure, check_markers, check_terms,
-    check_patterns и check_promises, агрегирует находки, считает
-    error/warning/info и выдаёт вердикт ok/warn/fail. Вызывай после
-    написания черновика главы.
+    check_patterns, check_promises и check_styleguide, агрегирует находки,
+    считает error/warning/info и выдаёт вердикт ok/warn/fail. Вызывай
+    после написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.

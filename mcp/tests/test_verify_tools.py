@@ -529,6 +529,87 @@ def test_promises_missing_metadata_no_findings(tmp_path: Path) -> None:
     assert verify_tools.check_promises(root, 5) == []
 
 
+# ─── check_styleguide ─────────────────────────────────────────────────
+
+
+def test_styleguide_clean_prose_no_findings(tmp_path: Path) -> None:
+    md = (
+        "# Глава 5\n\n## 1. Раздел\n\n"
+        "Матрица растягивает площадь. Вы помните это из главы 3.\n\n"
+        "Перемножим: $2 \\cdot 3 = 6$. Размер матрицы — $m \\times n$.\n"
+    )
+    root = _write(tmp_path, md)
+    assert verify_tools.check_styleguide(root, 5) == []
+
+
+def test_styleguide_forbidden_phrase_is_warning(tmp_path: Path) -> None:
+    md = "# Глава 5\n\nСледует заметить, что определитель растягивает площадь.\n"
+    root = _write(tmp_path, md)
+    findings = verify_tools.check_styleguide(root, 5)
+    fp = [f for f in findings if f["code"] == "styleguide_forbidden_phrase"]
+    assert len(fp) == 1
+    assert fp[0]["severity"] == "warning"
+    assert "следует заметить" in fp[0]["message"]
+    assert fp[0]["location"] == "строка 3"
+
+
+def test_styleguide_forbidden_phrase_case_insensitive(tmp_path: Path) -> None:
+    # «Очевидно, что» с заглавной (начало предложения) — тоже ловим.
+    md = "# Глава 5\n\nОчевидно, что сумма углов равна 180.\n"
+    root = _write(tmp_path, md)
+    assert "styleguide_forbidden_phrase" in _codes(
+        verify_tools.check_styleguide(root, 5)
+    )
+
+
+def test_styleguide_filler_word_is_info(tmp_path: Path) -> None:
+    md = "# Глава 5\n\nМатрица является линейным отображением.\n"
+    root = _write(tmp_path, md)
+    findings = verify_tools.check_styleguide(root, 5)
+    fw = [f for f in findings if f["code"] == "styleguide_filler_word"]
+    assert len(fw) == 1
+    assert fw[0]["severity"] == "info"
+
+
+def test_styleguide_filler_word_boundary(tmp_path: Path) -> None:
+    # «являются» ловим, но не цепляем словоформы внутри других слов.
+    md = "# Глава 5\n\nЭти векторы являются базисом. Появляются новые идеи.\n"
+    root = _write(tmp_path, md)
+    fw = [
+        f
+        for f in verify_tools.check_styleguide(root, 5)
+        if f["code"] == "styleguide_filler_word"
+    ]
+    assert len(fw) == 1  # только «являются», не «Появляются»
+
+
+def test_styleguide_times_between_numbers_is_warning(tmp_path: Path) -> None:
+    md = "# Глава 5\n\nПеремножим: $2 \\times 3 = 6$.\n"
+    root = _write(tmp_path, md)
+    findings = verify_tools.check_styleguide(root, 5)
+    fn = [f for f in findings if f["code"] == "styleguide_formula_notation"]
+    assert len(fn) == 1
+    assert fn[0]["severity"] == "warning"
+
+
+def test_styleguide_times_for_dimensions_no_finding(tmp_path: Path) -> None:
+    # «m \times n» (размер матрицы) — легитимно, не триггерит.
+    md = "# Глава 5\n\nМатрица размера $m \\times n$ имеет $mn$ элементов.\n"
+    root = _write(tmp_path, md)
+    assert "styleguide_formula_notation" not in _codes(
+        verify_tools.check_styleguide(root, 5)
+    )
+
+
+def test_styleguide_no_metadata_still_runs(tmp_path: Path) -> None:
+    # check_styleguide работает по прозе и не требует metadata.json.
+    md = "# Глава 5\n\nНетрудно видеть, что это так.\n"
+    root = _write(tmp_path, md)  # без metadata
+    assert "styleguide_forbidden_phrase" in _codes(
+        verify_tools.check_styleguide(root, 5)
+    )
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -543,6 +624,7 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
         "check_terms",
         "check_patterns",
         "check_promises",
+        "check_styleguide",
     ]
     assert report["source"] == "chapter.md"
 
@@ -622,3 +704,12 @@ def test_real_chapter5_promises_findings(real_repo: Path) -> None:
     sf = [f for f in findings if f["code"] == "promise_count_shortfall"]
     assert len(sf) == 1
     assert sf[0]["severity"] == "info"
+
+
+def test_real_chapter4_styleguide_clean(real_repo: Path) -> None:
+    """Глава 4 написана по стилгайду: ни канцелярита, ни \\times между числами.
+
+    Реальный смоук проверяет обратное синтетическим фикстурам — что
+    хорошая проза проходит без ложных срабатываний.
+    """
+    assert verify_tools.check_styleguide(real_repo, 4) == []

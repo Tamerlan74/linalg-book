@@ -1,4 +1,4 @@
-"""Группа B — проверки готовой главы (Часть 0 брифинга, §7).
+r"""Группа B — проверки готовой главы (Часть 0 брифинга, §7).
 
 Детерминированные проверки черновика/финальной главы. Как и Группа A,
 **только читают файлы репозитория** — никакого LLM, SymPy, сети.
@@ -19,6 +19,9 @@
 - :func:`check_promises`  — обещания мостика предыдущей главы
   (``bridge_to_next.promises``) сверяются с тем, что эта глава подхватила
   в ``previous_promises_to_fulfill`` (бухгалтерия смежности, без семантики).
+- :func:`check_styleguide` — проза сверяется с механически проверяемой
+  частью стилгайда: запрещённые канцелярские конструкции и нотация формул
+  (``\times`` между числами). Семантика (залог, тон) — вне охвата.
 - :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
@@ -66,6 +69,11 @@ check_promises
     promises_not_carried    warning  — мостик прошлой главы что-то обещал,
                                        а эта глава ничего не подхватила
     promise_count_shortfall info     — подхвачено меньше пунктов, чем обещано
+
+check_styleguide
+    styleguide_forbidden_phrase warning — канцелярит из стоп-списка стилгайда
+    styleguide_filler_word      info    — связка-наполнитель «является»
+    styleguide_formula_notation warning — \times между числами (нужен \cdot)
 
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
@@ -866,6 +874,115 @@ def check_promises(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_styleguide ─────────────────────────────────────────────────
+
+# Запрещённые конструкции (style_guide.md, §«Запрещённые конструкции»).
+# Хардкод осознанный: список редакторский и стабильный, а парсить прозу
+# стилгайда хрупко — в одном пункте бывает и запрет, и рекомендованная
+# замена («мы знаем, что» → «вы помните, что»), их не различить наивно.
+# Отдельные строки — distinctive, риск ложных срабатываний почти нулевой.
+_FORBIDDEN_PHRASES = (
+    "следует заметить",
+    "следует отметить",
+    "было бы целесообразно",
+    "мы знаем, что",
+    "очевидно, что",
+    "нетрудно видеть",
+)
+
+# Связки-наполнители: контекстно допустимы, поэтому info, а не warning.
+# «данный» сознательно НЕ ловим: по подстроке сталкивается с «данные/
+# данных» (= data), по границе слова не отличить «данный»=«этот» от
+# легитимного — это случай для человека, не для грепа.
+_FILLER_WORDS = (
+    "является",
+    "являются",
+)
+
+_FORBIDDEN_RE = tuple(
+    (p, re.compile(re.escape(p), re.IGNORECASE)) for p in _FORBIDDEN_PHRASES
+)
+_FILLER_RE = tuple(
+    (w, re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE)) for w in _FILLER_WORDS
+)
+
+# Умножение чисел: между цифрами нужен \cdot, не \times. Регекс
+# цифра-\times-цифра не цепляет легитимное «m \times n» (размер матрицы)
+# и \times в декартовом произведении.
+_TIMES_BETWEEN_NUMBERS = re.compile(r"\d\s*\\times\s*\d")
+
+
+def check_styleguide(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить прозу главы с механически проверяемой частью стилгайда.
+
+    Три находки:
+
+    - ``styleguide_forbidden_phrase`` (warning) — в прозе встретилась
+      запрещённая канцелярская конструкция из стоп-списка стилгайда
+      («следует заметить», «очевидно, что» и т.п.).
+    - ``styleguide_filler_word`` (info) — связка-наполнитель «является»/
+      «являются»; стилгайд советует «X — это Y». Контекстно допустима,
+      поэтому info.
+    - ``styleguide_formula_notation`` (warning) — между числами знак
+      умножения записан как ``\\times`` вместо ``\\cdot``.
+
+    Семантические правила стилгайда (активный залог, «человечность» тона,
+    «голая» математика без ``$``) **вне охвата**: детерминированно их не
+    проверить, а сервер не зовёт LLM. Сверяется только проза — план
+    (``metadata.json``) этой проверке не нужен.
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Список находок. Пустой — проза чистая по проверяемым правилам.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    content, _ = _read_chapter(root, chapter_number)
+    check = "check_styleguide"
+    findings: list[dict[str, Any]] = []
+
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        for phrase, rx in _FORBIDDEN_RE:
+            if rx.search(line):
+                findings.append(
+                    _finding(
+                        check,
+                        "warning",
+                        "styleguide_forbidden_phrase",
+                        f"Канцелярит «{phrase}» — стилгайд запрещает эту конструкцию.",
+                        location=f"строка {lineno}",
+                    )
+                )
+        for word, rx in _FILLER_RE:
+            if rx.search(line):
+                findings.append(
+                    _finding(
+                        check,
+                        "info",
+                        "styleguide_filler_word",
+                        f"«{word}» — связка-наполнитель; стилгайд советует "
+                        f"«X — это Y».",
+                        location=f"строка {lineno}",
+                    )
+                )
+        if _TIMES_BETWEEN_NUMBERS.search(line):
+            findings.append(
+                _finding(
+                    check,
+                    "warning",
+                    "styleguide_formula_notation",
+                    "Между числами знак умножения — \\cdot, а не \\times.",
+                    location=f"строка {lineno}",
+                )
+            )
+
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
@@ -875,6 +992,7 @@ _ALL_CHECKS = (
     check_terms,
     check_patterns,
     check_promises,
+    check_styleguide,
 )
 
 
@@ -893,7 +1011,7 @@ def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
               "source": "chapter.md" | "draft.md",
               "checks_run": ["check_structure", "check_markers",
                              "check_terms", "check_patterns",
-                             "check_promises"],
+                             "check_promises", "check_styleguide"],
               "counts": {"error": E, "warning": W, "info": I},
               "verdict": "ok" | "warn" | "fail",
               "findings": [ ...все находки... ],
