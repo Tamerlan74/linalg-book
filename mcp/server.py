@@ -7,8 +7,8 @@
 Этого достаточно, чтобы Claude в чате claude.ai получал от сервера весь
 контекст книги по требованию.
 
-Группа B (проверки готовой главы) — первый срез: ``check_structure``,
-``check_markers``, ``verify_chapter`` (оркестратор). Вычисления — в
+Группа B (проверки готовой главы): ``check_structure``, ``check_markers``,
+``check_terms`` и оркестратор ``verify_chapter``. Вычисления — в
 ``tools/verify_tools.py``. Остальные проверки добавятся следующими
 срезами.
 
@@ -219,12 +219,28 @@ def check_markers(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_terms(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить термины главы против плана и глоссария.
+
+    Сверяет термины из плана (new_terms_introduced) с разметкой
+    **[термин]{определение}** в прозе и с глоссарием предыдущих глав:
+    не размеченные термины, размеченные вне плана, повторный ввод уже
+    введённого термина. Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_terms(chapter_number=%s)", chapter_number)
+    return verify_tools.check_terms(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
-    Оркестратор: прогоняет check_structure и check_markers, агрегирует
-    находки, считает error/warning/info и выдаёт вердикт ok/warn/fail.
-    Вызывай после написания черновика главы.
+    Оркестратор: прогоняет check_structure, check_markers и check_terms,
+    агрегирует находки, считает error/warning/info и выдаёт вердикт
+    ok/warn/fail. Вызывай после написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.

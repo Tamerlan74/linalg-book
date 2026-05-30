@@ -229,6 +229,66 @@ def test_markers_in_heading_placement_ok(tmp_path: Path) -> None:
     assert "marker_placement" not in _codes(verify_tools.check_markers(root, 5))
 
 
+# ─── check_terms ──────────────────────────────────────────────────────
+
+
+def test_terms_clean_chapter_no_findings(tmp_path: Path) -> None:
+    md = (
+        "# Глава 5\n\n## 1. Раздел\n\n"
+        "Вводим **[когомология]{грубо — дырки пространства}** здесь.\n"
+    )
+    meta = {
+        "chapter_number": 5,
+        "new_terms_introduced": [{"term": "когомология", "definition": "..."}],
+    }
+    root = _write(tmp_path, md, metadata=meta)
+    assert verify_tools.check_terms(root, 5) == []
+
+
+def test_terms_not_marked_is_warning(tmp_path: Path) -> None:
+    # Термин в плане есть, разметки в прозе нет.
+    md = "# Глава 5\n\n## 1. Раздел\n\nПросто текст про ранг без разметки.\n"
+    meta = {"chapter_number": 5, "new_terms_introduced": [{"term": "ранг"}]}
+    root = _write(tmp_path, md, metadata=meta)
+    findings = verify_tools.check_terms(root, 5)
+    nm = [f for f in findings if f["code"] == "term_not_marked"]
+    assert len(nm) == 1
+    assert nm[0]["severity"] == "warning"
+
+
+def test_terms_unplanned_marked_is_info(tmp_path: Path) -> None:
+    md = "# Глава 5\n\nВводим **[ядро]{kernel}** вне плана.\n"
+    meta = {"chapter_number": 5, "new_terms_introduced": []}
+    root = _write(tmp_path, md, metadata=meta)
+    findings = verify_tools.check_terms(root, 5)
+    up = [f for f in findings if f["code"] == "unplanned_term_marked"]
+    assert len(up) == 1
+    assert up[0]["severity"] == "info"
+
+
+def test_terms_reintroduced_is_warning(tmp_path: Path) -> None:
+    # Термин введён в главе 4, заново размечен как новый в главе 5.
+    md4 = "# Глава 4\n\nВпервые: **[образ]{image}**.\n"
+    md5 = "# Глава 5\n\nСнова как новый: **[образ]{image}**.\n"
+    meta5 = {"chapter_number": 5, "new_terms_introduced": [{"term": "образ"}]}
+    _write(tmp_path, md4, n=4)
+    root = _write(tmp_path, md5, metadata=meta5, n=5)
+    findings = verify_tools.check_terms(root, 5)
+    ri = [f for f in findings if f["code"] == "term_reintroduced"]
+    assert len(ri) == 1
+    assert ri[0]["severity"] == "warning"
+    # размечен и в плане → не должно быть term_not_marked
+    assert "term_not_marked" not in _codes(findings)
+
+
+def test_terms_missing_metadata_no_findings(tmp_path: Path) -> None:
+    # Нет metadata.json → check_terms молчит (missing_metadata — забота
+    # check_structure), даже если в прозе есть разметка вне плана.
+    md = "# Глава 5\n\nВводим **[ядро]{kernel}**.\n"
+    root = _write(tmp_path, md)
+    assert verify_tools.check_terms(root, 5) == []
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -237,7 +297,7 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
     report = verify_tools.verify_chapter(root, 5)
     assert report["verdict"] == "ok"
     assert report["counts"] == {"error": 0, "warning": 0, "info": 0}
-    assert report["checks_run"] == ["check_structure", "check_markers"]
+    assert report["checks_run"] == ["check_structure", "check_markers", "check_terms"]
     assert report["source"] == "chapter.md"
 
 
@@ -280,6 +340,13 @@ def test_real_chapter4_markers_findings(real_repo: Path) -> None:
     """Глава 4: в плане 2 биохазарда, в прозе один маркер ⚠."""
     codes = _codes(verify_tools.check_markers(real_repo, 4))
     assert "biohazard_count_mismatch" in codes
+
+
+def test_real_chapter4_terms_findings(real_repo: Path) -> None:
+    """Глава 4: в плане 3 новых термина, в прозе разметки нет вовсе."""
+    findings = verify_tools.check_terms(real_repo, 4)
+    not_marked = [f for f in findings if f["code"] == "term_not_marked"]
+    assert len(not_marked) == 3
 
 
 def test_real_chapter4_verdict_fail(real_repo: Path) -> None:

@@ -3,14 +3,17 @@
 Детерминированные проверки черновика/финальной главы. Как и Группа A,
 **только читают файлы репозитория** — никакого LLM, SymPy, сети.
 
-Первый срез Группы B:
+Группа B:
 - :func:`check_structure` — структура прозы сверяется с планом
   (``metadata.json``): есть ли H1, все ли заявленные разделы на месте,
   совпадают ли заголовки, есть ли итог и мостик.
 - :func:`check_markers`   — маркеры биохазарда ``⚠``: их число против
   плана, частота против паттерна ``biohazard_marker``, и стоят ли они
   в начале блока.
-- :func:`verify_chapter`  — оркестратор: запускает обе проверки и сводит
+- :func:`check_terms`     — термины из плана (``new_terms_introduced``)
+  сверяются с разметкой ``**[термин]{определение}**`` в прозе и с
+  глоссарием предыдущих глав (повторный ввод термина).
+- :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
 Каждая проверка (``check_*``) возвращает **список находок**. Находка —
@@ -43,6 +46,11 @@ check_markers
     marker_frequency_exceeded warning — ⚠ больше, чем допускает паттерн
     marker_placement         info    — ⚠ не в начале блока/заголовка
 
+check_terms
+    term_not_marked         warning  — термин из плана не размечен в прозе
+    unplanned_term_marked   info     — в прозе размечен термин не из плана
+    term_reintroduced       warning  — термин уже вводился в более ранней главе
+
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
 """
@@ -56,11 +64,13 @@ from typing import Any
 
 import cache
 from tools.context_tools import (
+    _TERM_MARKUP,
     ContentNotFoundError,
     _chapter_dir,
     _parse_frontmatter,
     _resolve_chapter_file,
     get_chapter_plan,
+    get_glossary,
     get_pattern_details,
 )
 
@@ -400,10 +410,126 @@ def check_markers(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_terms ──────────────────────────────────────────────────────
+
+
+def _marked_terms(content: str) -> list[str]:
+    """Термины, размеченные в прозе как ``**[термин]{определение}**``.
+
+    Возвращает имена терминов по порядку появления (с возможными
+    повторами); определение игнорируем — здесь важен сам факт разметки.
+    """
+    return [
+        m.group(1).strip()
+        for m in _TERM_MARKUP.finditer(content)
+        if m.group(1).strip()
+    ]
+
+
+def _planned_terms(meta: dict[str, Any]) -> list[str]:
+    """Имена терминов из ``new_terms_introduced`` плана (устойчиво к мусору)."""
+    terms: list[str] = []
+    declared = meta.get("new_terms_introduced")
+    if isinstance(declared, list):
+        for item in declared:
+            if isinstance(item, dict):
+                term = item.get("term")
+                if isinstance(term, str) and term.strip():
+                    terms.append(term.strip())
+    return terms
+
+
+def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить термины главы: план ↔ разметка в прозе ↔ глоссарий.
+
+    Три находки:
+
+    - ``term_not_marked`` (warning) — термин заявлен в плане
+      (``new_terms_introduced``), но не размечен в прозе как
+      ``**[термин]{определение}**``.
+    - ``unplanned_term_marked`` (info) — термин размечен в прозе, но его
+      нет в плане.
+    - ``term_reintroduced`` (warning) — термин размечен в этой главе как
+      новый, хотя уже вводился в **более ранней** главе (по глоссарию).
+
+    Сравнение имён регистронезависимое, пробелы схлопываются. Если
+    ``metadata.json`` нет — возвращает ``[]`` (ошибку ``missing_metadata``
+    выдаёт :func:`check_structure`, дублировать не нужно).
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Список находок. Пустой — с терминами всё в порядке.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    content, _ = _read_chapter(root, chapter_number)
+    check = "check_terms"
+
+    meta = _load_meta(root, chapter_number)
+    if meta is None:
+        return []
+
+    findings: list[dict[str, Any]] = []
+    planned = _planned_terms(meta)
+    marked = _marked_terms(content)
+    planned_norm = {_normalize_title(t) for t in planned}
+    marked_norm = {_normalize_title(t) for t in marked}
+
+    # 1) Заявлен в плане, но не размечен в прозе.
+    for term in planned:
+        if _normalize_title(term) not in marked_norm:
+            findings.append(
+                _finding(
+                    check, "warning", "term_not_marked",
+                    f"Термин «{term}» заявлен в плане (new_terms_introduced), "
+                    f"но не размечен в прозе как **[термин]{{определение}}**.",
+                    location=f"metadata: new_terms_introduced[{term}]",
+                )
+            )
+
+    # 2) Размечен в прозе, но его нет в плане (по первому появлению).
+    emitted_unplanned: set[str] = set()
+    for term in marked:
+        n = _normalize_title(term)
+        if n not in planned_norm and n not in emitted_unplanned:
+            emitted_unplanned.add(n)
+            findings.append(
+                _finding(
+                    check, "info", "unplanned_term_marked",
+                    f"Термин «{term}» размечен в прозе, но его нет в плане "
+                    f"(new_terms_introduced).",
+                )
+            )
+
+    # 3) Повторный ввод: термин уже вводился в более ранней главе.
+    introduced_in: dict[str, int] = {
+        _normalize_title(g["term"]): g["introduced_in"] for g in get_glossary(root)
+    }
+    emitted_reintro: set[str] = set()
+    for term in marked:
+        n = _normalize_title(term)
+        first = introduced_in.get(n)
+        if first is not None and first < chapter_number and n not in emitted_reintro:
+            emitted_reintro.add(n)
+            findings.append(
+                _finding(
+                    check, "warning", "term_reintroduced",
+                    f"Термин «{term}» размечен в главе {chapter_number} как новый, "
+                    f"но уже вводился в главе {first}.",
+                )
+            )
+
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
-_ALL_CHECKS = (check_structure, check_markers)
+_ALL_CHECKS = (check_structure, check_markers, check_terms)
 
 
 def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
