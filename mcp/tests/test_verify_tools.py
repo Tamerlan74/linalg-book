@@ -711,6 +711,135 @@ def test_links_no_metadata_still_runs(tmp_path: Path) -> None:
     assert "missing_image" in _codes(verify_tools.check_links(root, 5))
 
 
+# ─── check_terminology (контролируемый словарь) ───────────────────────
+
+
+# Словарь с одной записью: канон «определитель», запрещённый «детерминант».
+_TERM_DICT = (
+    "terms:\n"
+    "  - canon: определитель\n"
+    "    variants: [детерминант]\n"
+    "    note: в книге единый термин — «определитель»\n"
+)
+
+
+def _write_terminology(root: Path, yaml_text: str) -> None:
+    """Записать book_meta/terminology.yaml во временное репо."""
+    meta = root / "book_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "terminology.yaml").write_text(yaml_text, encoding="utf-8")
+
+
+def test_terminology_variant_flagged(tmp_path: Path) -> None:
+    root = _write(tmp_path, "# Глава 5\n\nМы считаем детерминант матрицы.\n")
+    _write_terminology(root, _TERM_DICT)
+    [f] = verify_tools.check_terminology(root, 5)
+    assert f["code"] == "noncanonical_term"
+    assert f["severity"] == "warning"
+    assert "детерминант" in f["message"]
+    assert "определитель" in f["message"]
+    assert f["location"] == "строка 3"
+
+
+def test_terminology_inflection_caught(tmp_path: Path) -> None:
+    # «детерминанта» — окончание дописано к варианту, должно ловиться.
+    root = _write(tmp_path, "# Глава 5\n\nЗнак детерминанта меняется.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert "noncanonical_term" in _codes(verify_tools.check_terminology(root, 5))
+
+
+def test_terminology_canon_not_flagged(tmp_path: Path) -> None:
+    # Проза использует сам канон — нарушения нет.
+    root = _write(tmp_path, "# Глава 5\n\nМы считаем определитель матрицы.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert verify_tools.check_terminology(root, 5) == []
+
+
+def test_terminology_case_insensitive(tmp_path: Path) -> None:
+    root = _write(tmp_path, "# Глава 5\n\nДетерминант равен нулю.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert "noncanonical_term" in _codes(verify_tools.check_terminology(root, 5))
+
+
+def test_terminology_dedup_and_count(tmp_path: Path) -> None:
+    # Три вхождения варианта → одна находка с числом «3×».
+    md = "# Глава 5\n\nдетерминант, детерминант и ещё раз детерминант.\n"
+    root = _write(tmp_path, md)
+    _write_terminology(root, _TERM_DICT)
+    [f] = verify_tools.check_terminology(root, 5)
+    assert "3×" in f["message"]
+    assert f["location"] == "строка 3"
+
+
+def test_terminology_inside_math_skipped(tmp_path: Path) -> None:
+    # Вариант внутри инлайн-математики не считается прозой.
+    root = _write(tmp_path, "# Глава 5\n\nФормула $детерминант = 0$ дана.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert verify_tools.check_terminology(root, 5) == []
+
+
+def test_terminology_inside_code_skipped(tmp_path: Path) -> None:
+    # Вариант внутри backtick-кода не считается прозой.
+    root = _write(tmp_path, "# Глава 5\n\nИдентификатор `детерминант` в коде.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert verify_tools.check_terminology(root, 5) == []
+
+
+def test_terminology_note_appended(tmp_path: Path) -> None:
+    root = _write(tmp_path, "# Глава 5\n\nЗдесь детерминант.\n")
+    _write_terminology(root, _TERM_DICT)
+    [f] = verify_tools.check_terminology(root, 5)
+    assert f["message"].endswith("в книге единый термин — «определитель»")
+
+
+def test_terminology_multiword_variant(tmp_path: Path) -> None:
+    # Многословный вариант «собственное число» ловится точной формой.
+    term_dict = (
+        "terms:\n  - canon: собственное значение\n    variants: [собственное число]\n"
+    )
+    root = _write(tmp_path, "# Глава 5\n\nНайдём собственное число оператора.\n")
+    _write_terminology(root, term_dict)
+    [f] = verify_tools.check_terminology(root, 5)
+    assert f["code"] == "noncanonical_term"
+    assert "собственное число" in f["message"]
+    assert "собственное значение" in f["message"]
+
+
+def test_terminology_variant_equal_canon_ignored(tmp_path: Path) -> None:
+    # Вариант, совпадающий с каноном (без учёта регистра), отбрасывается.
+    _write_terminology(
+        tmp_path,
+        "terms:\n  - canon: определитель\n    variants: [Определитель]\n",
+    )
+    assert verify_tools._load_terminology(tmp_path) == []
+
+
+def test_terminology_malformed_yaml_silent(tmp_path: Path) -> None:
+    root = _write(tmp_path, "# Глава 5\n\nдетерминант.\n")
+    _write_terminology(root, "terms: : : не yaml\n")
+    assert verify_tools.check_terminology(root, 5) == []
+
+
+def test_terminology_severity_off_via_config(tmp_path: Path) -> None:
+    root = _write(tmp_path, "# Глава 5\n\nдетерминант.\n")
+    _write_terminology(root, _TERM_DICT)
+    assert _codes(verify_tools.check_terminology(root, 5)) == {"noncanonical_term"}
+    _write_config(root, 'check_terminology:\n  noncanonical_term: "off"\n')
+    assert verify_tools.check_terminology(root, 5) == []
+
+
+def test_load_terminology_absent_returns_empty(tmp_path: Path) -> None:
+    assert verify_tools._load_terminology(tmp_path) == []
+
+
+def test_terminology_no_terms_key_silent(tmp_path: Path) -> None:
+    # Файл есть, но без списка terms → словарь пуст, проверка молчит.
+    root = _write(tmp_path, "# Глава 5\n\nдетерминант.\n")
+    _write_terminology(root, "note: просто комментарий\n")
+    assert verify_tools._load_terminology(root) == []
+    assert verify_tools.check_terminology(root, 5) == []
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -727,6 +856,7 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
         "check_promises",
         "check_styleguide",
         "check_links",
+        "check_terminology",
     ]
     assert report["source"] == "chapter.md"
 
@@ -928,3 +1058,13 @@ def test_real_chapter4_links_findings(real_repo: Path) -> None:
     assert len(broken_ref) == 1
     assert broken_ref[0]["severity"] == "warning"
     assert "3" in broken_ref[0]["message"]
+
+
+def test_real_chapter4_terminology_clean(real_repo: Path) -> None:
+    """Реальный словарь — пока только шаблон без активных записей.
+
+    `book_meta/terminology.yaml` закомментирован, значит словарь пуст и
+    `check_terminology` молчит для любой главы.
+    """
+    assert verify_tools._load_terminology(real_repo) == []
+    assert verify_tools.check_terminology(real_repo, 4) == []

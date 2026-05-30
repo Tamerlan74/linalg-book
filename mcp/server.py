@@ -304,13 +304,31 @@ def check_links(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_terminology(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить терминологию главы против контролируемого словаря.
+
+    Сверяет прозу с book_meta/terminology.yaml: встретился ли запрещённый
+    вариант термина вместо канона (noncanonical_term, warning). Совпадение
+    регистронезависимое и терпит русские окончания («определитель» поймает
+    «определителя»). Инлайн-математика $...$ и backtick-код пропускаются.
+    Словаря нет / он пуст → находок нет; metadata.json не нужен, работает
+    и на черновике. Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_terminology(chapter_number=%s)", chapter_number)
+    return verify_tools.check_terminology(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
     Оркестратор: прогоняет check_structure, check_markers, check_terms,
-    check_patterns, check_promises, check_styleguide и check_links,
-    агрегирует находки, считает error/warning/info и выдаёт вердикт
-    ok/warn/fail. Вызывай после написания черновика главы.
+    check_patterns, check_promises, check_styleguide, check_links и
+    check_terminology, агрегирует находки, считает error/warning/info и
+    выдаёт вердикт ok/warn/fail. Вызывай после написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.

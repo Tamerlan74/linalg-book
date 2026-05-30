@@ -25,6 +25,9 @@ r"""Группа B — проверки готовой главы (Часть 0 
 - :func:`check_links`     — ссылки прозы сверяются с файловой системой:
   существуют ли локальные картинки ``![alt](images/...)`` и есть ли папка
   ``chapter_NN`` для каждой упомянутой «главы N».
+- :func:`check_terminology` — проза сверяется с контролируемым словарём
+  ``book_meta/terminology.yaml``: встретился ли запрещённый вариант термина
+  вместо канона (с допуском русских окончаний).
 - :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
@@ -85,6 +88,9 @@ check_styleguide
 check_links
     missing_image           error    — локальная картинка не найдена на диске
     broken_chapter_ref      warning  — нет папки chapter_NN для «главы N»
+
+check_terminology
+    noncanonical_term       warning  — в прозе вариант термина вместо канона
 
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
@@ -1218,6 +1224,174 @@ def check_links(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_terminology ────────────────────────────────────────────────
+
+_TERMINOLOGY_FILE = "terminology.yaml"
+
+# Инлайн-математика ``$...$`` и код в backticks: вырезаем перед сканом,
+# чтобы не ловить «варианты» внутри формул и идентификаторов.
+_INLINE_MATH_RE = re.compile(r"\$[^$\n]*\$")
+_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+
+
+def _load_terminology(root: Path) -> list[dict[str, Any]]:
+    """Прочитать ``book_meta/terminology.yaml`` → список записей канона.
+
+    Формат::
+
+        terms:
+          - canon: определитель
+            variants: [детерминант]
+            note: в книге единый термин — «определитель»
+
+    Returns:
+        Список ``{"canon": str, "variants": [str, ...], "note": str}``.
+        Пустой список, если файла нет, он пуст, битый или без валидных
+        записей — тогда :func:`check_terminology` просто молчит. Варианты,
+        совпадающие с самим каноном, отбрасываются (защита от самопометки).
+    """
+    path = root / _BOOK_META / _TERMINOLOGY_FILE
+    try:
+        raw = cache.read_text(path)
+    except FileNotFoundError:
+        return []
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError as e:
+        log.warning("%s: невалидный YAML, игнорирую (%s)", _TERMINOLOGY_FILE, e)
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw_terms = data.get("terms")
+    if not isinstance(raw_terms, list):
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for item in raw_terms:
+        if not isinstance(item, dict):
+            continue
+        canon = item.get("canon")
+        variants = item.get("variants")
+        if not isinstance(canon, str) or not canon.strip():
+            log.warning("%s: запись без строкового canon, пропускаю", _TERMINOLOGY_FILE)
+            continue
+        if not isinstance(variants, list):
+            continue
+        canon_norm = _normalize_title(canon)
+        clean = [
+            v.strip()
+            for v in variants
+            if isinstance(v, str) and v.strip() and _normalize_title(v) != canon_norm
+        ]
+        if not clean:
+            continue
+        note = item.get("note")
+        entries.append(
+            {
+                "canon": canon.strip(),
+                "variants": clean,
+                "note": note.strip() if isinstance(note, str) else "",
+            }
+        )
+    return entries
+
+
+def _variant_regex(variant: str) -> re.Pattern[str]:
+    """Регекс на вариант термина с допуском русского окончания.
+
+    Каждое слово варианта матчится от границы слова и «съедает» хвост из
+    кириллицы/латиницы — так ``детерминант`` ловит и ``детерминанта`` /
+    ``детерминантом``. Регистронезависимо.
+    """
+    body = r"\s+".join(re.escape(w) + r"[а-яёa-z]*" for w in variant.split())
+    return re.compile(r"\b" + body, re.IGNORECASE)
+
+
+def _strip_inline_math_code(line: str) -> str:
+    """Убрать инлайн-математику и backtick-код из строки перед сканом."""
+    return _CODE_SPAN_RE.sub(" ", _INLINE_MATH_RE.sub(" ", line))
+
+
+@_configurable
+def check_terminology(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить прозу с контролируемым словарём ``book_meta/terminology.yaml``.
+
+    Находка ``noncanonical_term`` (warning) — в прозе встретился запрещённый
+    вариант термина; сообщение указывает на канон (и ``note``, если задана).
+    Дедуп по варианту: одна находка на вариант с номером первой строки и
+    суммарным числом вхождений по главе.
+
+    Совпадение регистронезависимое и терпит русские окончания (вариант
+    ``определитель`` поймает ``определителя``). Инлайн-математика ``$...$``
+    и backtick-код вырезаются перед сканом. Если ``terminology.yaml`` нет
+    или он пуст — возвращает ``[]``; ``metadata.json`` не нужен, работает
+    и по черновику.
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Список находок в порядке первого появления. Пустой — словарь не
+        задан или нарушений нет.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    content, _ = _read_chapter(root, chapter_number)
+    check = "check_terminology"
+
+    entries = _load_terminology(root)
+    if not entries:
+        return []
+
+    matchers = [
+        (_variant_regex(v), v, e["canon"], e["note"])
+        for e in entries
+        for v in e["variants"]
+    ]
+
+    # variant_norm → агрегат (первая строка + счётчик вхождений).
+    hits: dict[str, dict[str, Any]] = {}
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        clean = _strip_inline_math_code(line)
+        for rx, variant, canon, note in matchers:
+            found = rx.findall(clean)
+            if not found:
+                continue
+            key = _normalize_title(variant)
+            existing = hits.get(key)
+            if existing is None:
+                hits[key] = {
+                    "lineno": lineno,
+                    "count": len(found),
+                    "canon": canon,
+                    "variant": variant,
+                    "note": note,
+                }
+            else:
+                existing["count"] += len(found)
+
+    findings: list[dict[str, Any]] = []
+    for h in hits.values():
+        msg = (
+            f"В прозе встречается «{h['variant']}» ({h['count']}×) — "
+            f"в книге канон «{h['canon']}»."
+        )
+        if h["note"]:
+            msg += f" {h['note']}"
+        findings.append(
+            _finding(
+                check,
+                "warning",
+                "noncanonical_term",
+                msg,
+                location=f"строка {h['lineno']}",
+            )
+        )
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
@@ -1229,6 +1403,7 @@ _ALL_CHECKS = (
     check_promises,
     check_styleguide,
     check_links,
+    check_terminology,
 )
 
 
@@ -1248,7 +1423,7 @@ def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
               "checks_run": ["check_structure", "check_markers",
                              "check_terms", "check_patterns",
                              "check_promises", "check_styleguide",
-                             "check_links"],
+                             "check_links", "check_terminology"],
               "counts": {"error": E, "warning": W, "info": I},
               "verdict": "ok" | "warn" | "fail",
               "findings": [ ...все находки... ],
