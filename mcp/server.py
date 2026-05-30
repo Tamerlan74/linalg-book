@@ -8,9 +8,9 @@
 контекст книги по требованию.
 
 Группа B (проверки готовой главы): ``check_structure``, ``check_markers``,
-``check_terms`` и оркестратор ``verify_chapter``. Вычисления — в
-``tools/verify_tools.py``. Остальные проверки добавятся следующими
-срезами.
+``check_terms``, ``check_patterns`` и оркестратор ``verify_chapter``.
+Вычисления — в ``tools/verify_tools.py``. Остальные проверки добавятся
+следующими срезами.
 
 Архитектура:
 - Используется **FastMCP** (высокоуровневый API SDK), как в рабочем
@@ -237,12 +237,28 @@ def check_terms(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_patterns(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить паттерны главы против библиотеки и таблицы конфликтов.
+
+    Сверяет patterns_used каждого раздела с библиотекой patterns/
+    (неизвестные ID — опечатки) и с 00_conflicts.md: конфликтующие
+    (CONFLICT) и переигрывающие (REDUNDANCY) пары паттернов в одной
+    главе/разделе. Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_patterns(chapter_number=%s)", chapter_number)
+    return verify_tools.check_patterns(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
-    Оркестратор: прогоняет check_structure, check_markers и check_terms,
-    агрегирует находки, считает error/warning/info и выдаёт вердикт
-    ok/warn/fail. Вызывай после написания черновика главы.
+    Оркестратор: прогоняет check_structure, check_markers, check_terms и
+    check_patterns, агрегирует находки, считает error/warning/info и
+    выдаёт вердикт ok/warn/fail. Вызывай после написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.

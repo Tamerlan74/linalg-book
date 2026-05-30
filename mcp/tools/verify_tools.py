@@ -13,6 +13,9 @@
 - :func:`check_terms`     — термины из плана (``new_terms_introduced``)
   сверяются с разметкой ``**[термин]{определение}**`` в прозе и с
   глоссарием предыдущих глав (повторный ввод термина).
+- :func:`check_patterns`  — паттерны из плана (``sections[].patterns_used``)
+  сверяются с библиотекой ``patterns/`` (неизвестные ID) и таблицей
+  ``00_conflicts.md`` (конфликтующие/переигрывающие пары).
 - :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
@@ -51,6 +54,11 @@ check_terms
     unplanned_term_marked   info     — в прозе размечен термин не из плана
     term_reintroduced       warning  — термин уже вводился в более ранней главе
 
+check_patterns
+    pattern_unknown         warning  — ID паттерна не найден в patterns/
+    pattern_conflict        warning  — пара из таблицы CONFLICT сосуществует
+    pattern_redundancy      info     — пара из таблицы REDUNDANCY сосуществует
+
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
 """
@@ -64,12 +72,14 @@ from typing import Any
 
 import cache
 from tools.context_tools import (
+    _PATTERNS,
     _TERM_MARKUP,
     ContentNotFoundError,
     _chapter_dir,
     _parse_frontmatter,
     _resolve_chapter_file,
     get_chapter_plan,
+    get_conflicts_table,
     get_glossary,
     get_pattern_details,
 )
@@ -554,10 +564,217 @@ def check_terms(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_patterns ───────────────────────────────────────────────────
+
+# ID паттерна в ячейке таблицы 00_conflicts.md обёрнут в backticks.
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+
+def _pattern_token(cell: str) -> str | None:
+    """Достать ID паттерна из ячейки таблицы конфликтов.
+
+    ID — одно слово в backticks (``intro_etymology``). Прозаические
+    пометки вроде «(прямая подача нотации)» — не паттерны, вернёт None.
+    """
+    m = _BACKTICK_RE.search(cell)
+    if not m:
+        return None
+    token = m.group(1).strip()
+    if not token or " " in token or token.startswith("("):
+        return None
+    return token
+
+
+def _library_pattern_ids(root: Path) -> set[str] | None:
+    """Множество ID паттернов в библиотеке ``patterns/`` (по именам файлов).
+
+    Служебные файлы ``00_*`` (индекс, таблица конфликтов) исключаются.
+    None — если каталога ``patterns/`` нет (сверять не с чем).
+    """
+    patterns_root = root / _PATTERNS
+    if not patterns_root.is_dir():
+        return None
+    return {
+        md.stem for md in patterns_root.glob("**/*.md") if not md.stem.startswith("00_")
+    }
+
+
+def _is_chapter_scope(level: str) -> bool:
+    """Уровень конфликта — «глава» (иначе считаем разделом или тоньше)."""
+    return "глав" in level.lower()
+
+
+def _parse_conflict_pairs(root: Path) -> list[dict[str, str]]:
+    """Разобрать таблицы CONFLICT и REDUNDANCY из ``00_conflicts.md``.
+
+    Возвращает список пар ``{p1, p2, relation, level, explanation}``, где
+    ``relation`` ∈ {"CONFLICT", "REDUNDANCY"}. Таблица SYNERGY (проза,
+    рекомендованные связки) не разбирается — это подсказки, не нарушения.
+    Пары, где хотя бы один столбец не настоящий паттерн (прозаическая
+    пометка), пропускаются.
+    """
+    try:
+        text = get_conflicts_table(root)
+    except ContentNotFoundError:
+        return []
+    pairs: list[dict[str, str]] = []
+    relation: str | None = None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            head = s[3:].strip().lower()
+            if head.startswith("conflict"):
+                relation = "CONFLICT"
+            elif head.startswith("redundancy"):
+                relation = "REDUNDANCY"
+            else:
+                relation = None
+            continue
+        if relation is None or not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        # строка-разделитель | --- | --- | ...
+        if all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+            continue
+        # строка-заголовок таблицы
+        if cells[0].lower().startswith("паттерн"):
+            continue
+        p1 = _pattern_token(cells[0])
+        p2 = _pattern_token(cells[1])
+        if p1 is None or p2 is None:
+            continue
+        explanation = "|".join(cells[3:]).strip() if len(cells) > 3 else ""
+        pairs.append(
+            {
+                "p1": p1,
+                "p2": p2,
+                "relation": relation,
+                "level": cells[2],
+                "explanation": explanation,
+            }
+        )
+    return pairs
+
+
+def check_patterns(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить паттерны главы (``patterns_used``) с библиотекой и конфликтами.
+
+    Три находки:
+
+    - ``pattern_unknown`` (warning) — ID паттерна в ``patterns_used``
+      какого-то раздела не найден в библиотеке ``patterns/`` (опечатка).
+    - ``pattern_conflict`` (warning) — пара из таблицы CONFLICT
+      (``00_conflicts.md``) сосуществует: на уровне «глава» — где-либо в
+      главе, тоньше — в одном разделе (мельче метаданные не дают).
+    - ``pattern_redundancy`` (info) — пара из таблицы REDUNDANCY
+      сосуществует (та же логика уровней).
+
+    Жёсткий запрет CONFLICT — забота сборщика (до генерации); здесь, в
+    пост-проверке, это warning, а не error: для под-разделных уровней
+    («абзац», «задача», «один блок выкладки») совпадение в одном разделе —
+    лишь подозрение, не доказанное нарушение.
+
+    Если ``metadata.json`` нет — ``[]`` (как ``check_terms``). Если нет
+    каталога ``patterns/`` — тоже ``[]`` (сверять не с чем).
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Список находок. Пустой — с паттернами всё в порядке.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    _read_chapter(root, chapter_number)  # guard: глава должна быть написана
+    check = "check_patterns"
+
+    meta = _load_meta(root, chapter_number)
+    if meta is None:
+        return []
+    valid_ids = _library_pattern_ids(root)
+    if valid_ids is None:
+        return []
+
+    findings: list[dict[str, Any]] = []
+
+    # Паттерны по разделам и по всей главе.
+    section_patterns: list[tuple[int, set[str]]] = []
+    chapter_patterns: set[str] = set()
+    sections = meta.get("sections")
+    if isinstance(sections, list):
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            used = sec.get("patterns_used")
+            if not isinstance(used, list):
+                continue
+            ids = {p.strip() for p in used if isinstance(p, str) and p.strip()}
+            num = sec.get("number")
+            if isinstance(num, int):
+                section_patterns.append((num, ids))
+            chapter_patterns |= ids
+
+    # 1) Неизвестные паттерны.
+    emitted_unknown: set[tuple[int, str]] = set()
+    for num, ids in section_patterns:
+        for pid in sorted(ids):
+            if pid not in valid_ids and (num, pid) not in emitted_unknown:
+                emitted_unknown.add((num, pid))
+                findings.append(
+                    _finding(
+                        check,
+                        "warning",
+                        "pattern_unknown",
+                        f"Паттерн «{pid}» (раздел {num}) не найден в "
+                        f"библиотеке patterns/.",
+                        location=f"metadata: sections[number={num}].patterns_used",
+                    )
+                )
+
+    # 2) Конфликты и переигрывания.
+    for pair in _parse_conflict_pairs(root):
+        p1, p2 = pair["p1"], pair["p2"]
+        level = pair["level"]
+        expl = pair["explanation"]
+        if pair["relation"] == "CONFLICT":
+            severity, code, verb = "warning", "pattern_conflict", "конфликтуют"
+        else:
+            severity, code, verb = "info", "pattern_redundancy", "переигрывают"
+        if _is_chapter_scope(level):
+            if p1 in chapter_patterns and p2 in chapter_patterns:
+                findings.append(
+                    _finding(
+                        check,
+                        severity,
+                        code,
+                        f"Паттерны «{p1}» и «{p2}» {verb} (уровень «{level}»): {expl}",
+                    )
+                )
+        else:
+            for num, ids in section_patterns:
+                if p1 in ids and p2 in ids:
+                    findings.append(
+                        _finding(
+                            check,
+                            severity,
+                            code,
+                            f"Паттерны «{p1}» и «{p2}» {verb} в одном разделе "
+                            f"(уровень «{level}»): {expl}",
+                            location=f"## {num}.",
+                        )
+                    )
+
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
-_ALL_CHECKS = (check_structure, check_markers, check_terms)
+_ALL_CHECKS = (check_structure, check_markers, check_terms, check_patterns)
 
 
 def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
@@ -573,7 +790,8 @@ def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
             {
               "chapter_number": N,
               "source": "chapter.md" | "draft.md",
-              "checks_run": ["check_structure", "check_markers"],
+              "checks_run": ["check_structure", "check_markers",
+                             "check_terms", "check_patterns"],
               "counts": {"error": E, "warning": W, "info": I},
               "verdict": "ok" | "warn" | "fail",
               "findings": [ ...все находки... ],

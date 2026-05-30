@@ -52,6 +52,48 @@ def _codes(findings: list[dict]) -> set[str]:
     return {f["code"] for f in findings}
 
 
+def _write_pattern_lib(
+    tmp_path: Path,
+    ids: list[str],
+    *,
+    conflicts_md: str | None = None,
+) -> None:
+    """Создать библиотеку patterns/ с файлами ids + (опц.) 00_conflicts.md."""
+    pdir = tmp_path / "patterns" / "01_chapter_opening"
+    pdir.mkdir(parents=True, exist_ok=True)
+    for pid in ids:
+        (pdir / f"{pid}.md").write_text(
+            f"---\nid: {pid}\n---\n\n# Суть\n\nтело\n", encoding="utf-8"
+        )
+    if conflicts_md is not None:
+        (tmp_path / "patterns" / "00_conflicts.md").write_text(
+            conflicts_md, encoding="utf-8"
+        )
+
+
+# Таблица конфликтов: CONFLICT pat_a↔pat_b (раздел), REDUNDANCY pat_c↔pat_d
+# (абзац). Прозаическая пометка во второй строке CONFLICT — не паттерн.
+_CONFLICTS_MD = """# Конфликты
+
+## CONFLICTS — жёсткие запреты
+
+| Паттерн 1 | Паттерн 2 | Уровень конфликта | Объяснение |
+|---|---|---|---|
+| `pat_a` | `pat_b` | раздел | нельзя оба в одном разделе |
+| `pat_a` | `(прямая подача нотации)` | глава | прозаическая пометка, не паттерн |
+
+## REDUNDANCY — допустимо
+
+| Паттерн 1 | Паттерн 2 | Уровень | Объяснение |
+|---|---|---|---|
+| `pat_c` | `pat_d` | абзац | переигрывание |
+
+## SYNERGY — рекомендованные связки
+
+`pat_a` + `pat_c` — это не таблица, парсить не нужно.
+"""
+
+
 # Чистая глава: всё совпадает с планом.
 _CLEAN_MD = """# Глава 5. Тест
 
@@ -289,6 +331,126 @@ def test_terms_missing_metadata_no_findings(tmp_path: Path) -> None:
     assert verify_tools.check_terms(root, 5) == []
 
 
+# ─── check_patterns ───────────────────────────────────────────────────
+
+
+_PAT_MD = "# Глава 5\n\n## 1. Раздел\n\nтекст\n\n## 2. Раздел\n\nтекст\n"
+
+
+def _pat_meta(sections: list[dict]) -> dict:
+    return {"chapter_number": 5, "sections": sections}
+
+
+def test_patterns_clean_no_findings(tmp_path: Path) -> None:
+    meta = _pat_meta(
+        [
+            {"number": 1, "title": "Р", "patterns_used": ["pat_a"]},
+            {"number": 2, "title": "Р", "patterns_used": ["pat_c"]},
+        ]
+    )
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(
+        tmp_path, ["pat_a", "pat_b", "pat_c", "pat_d"], conflicts_md=_CONFLICTS_MD
+    )
+    assert verify_tools.check_patterns(root, 5) == []
+
+
+def test_patterns_unknown_is_warning(tmp_path: Path) -> None:
+    meta = _pat_meta(
+        [{"number": 1, "title": "Р", "patterns_used": ["pat_a", "typo_xxx"]}]
+    )
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(tmp_path, ["pat_a"], conflicts_md=_CONFLICTS_MD)
+    findings = verify_tools.check_patterns(root, 5)
+    unk = [f for f in findings if f["code"] == "pattern_unknown"]
+    assert len(unk) == 1
+    assert unk[0]["severity"] == "warning"
+    assert "typo_xxx" in unk[0]["message"]
+
+
+def test_patterns_conflict_same_section_is_warning(tmp_path: Path) -> None:
+    # pat_a↔pat_b — CONFLICT уровня «раздел»; оба в §1.
+    meta = _pat_meta([{"number": 1, "title": "Р", "patterns_used": ["pat_a", "pat_b"]}])
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(tmp_path, ["pat_a", "pat_b"], conflicts_md=_CONFLICTS_MD)
+    findings = verify_tools.check_patterns(root, 5)
+    conf = [f for f in findings if f["code"] == "pattern_conflict"]
+    assert len(conf) == 1
+    assert conf[0]["severity"] == "warning"
+
+
+def test_patterns_conflict_different_sections_no_finding(tmp_path: Path) -> None:
+    # CONFLICT уровня «раздел»: pat_a в §1, pat_b в §2 → не один раздел → молчим.
+    meta = _pat_meta(
+        [
+            {"number": 1, "title": "Р", "patterns_used": ["pat_a"]},
+            {"number": 2, "title": "Р", "patterns_used": ["pat_b"]},
+        ]
+    )
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(tmp_path, ["pat_a", "pat_b"], conflicts_md=_CONFLICTS_MD)
+    assert "pattern_conflict" not in _codes(verify_tools.check_patterns(root, 5))
+
+
+def test_patterns_chapter_level_conflict_across_sections(tmp_path: Path) -> None:
+    # CONFLICT уровня «глава» срабатывает, даже если паттерны в разных разделах.
+    conflicts = (
+        "## CONFLICTS\n\n"
+        "| Паттерн 1 | Паттерн 2 | Уровень | Объяснение |\n"
+        "|---|---|---|---|\n"
+        "| `pat_a` | `pat_b` | глава | нельзя в одной главе |\n"
+    )
+    meta = _pat_meta(
+        [
+            {"number": 1, "title": "Р", "patterns_used": ["pat_a"]},
+            {"number": 2, "title": "Р", "patterns_used": ["pat_b"]},
+        ]
+    )
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(tmp_path, ["pat_a", "pat_b"], conflicts_md=conflicts)
+    conf = [
+        f
+        for f in verify_tools.check_patterns(root, 5)
+        if f["code"] == "pattern_conflict"
+    ]
+    assert len(conf) == 1
+    assert conf[0]["location"] is None
+
+
+def test_patterns_redundancy_is_info(tmp_path: Path) -> None:
+    # pat_c↔pat_d — REDUNDANCY уровня «абзац»; оба в §1.
+    meta = _pat_meta([{"number": 1, "title": "Р", "patterns_used": ["pat_c", "pat_d"]}])
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    _write_pattern_lib(tmp_path, ["pat_c", "pat_d"], conflicts_md=_CONFLICTS_MD)
+    findings = verify_tools.check_patterns(root, 5)
+    red = [f for f in findings if f["code"] == "pattern_redundancy"]
+    assert len(red) == 1
+    assert red[0]["severity"] == "info"
+
+
+def test_parse_conflict_pairs_skips_prose_and_synergy(tmp_path: Path) -> None:
+    # Прозаическая пометка (не паттерн) и блок SYNERGY не попадают в пары.
+    _write_pattern_lib(tmp_path, [], conflicts_md=_CONFLICTS_MD)
+    pairs = verify_tools._parse_conflict_pairs(tmp_path)
+    assert {(p["p1"], p["p2"], p["relation"]) for p in pairs} == {
+        ("pat_a", "pat_b", "CONFLICT"),
+        ("pat_c", "pat_d", "REDUNDANCY"),
+    }
+
+
+def test_patterns_missing_metadata_no_findings(tmp_path: Path) -> None:
+    root = _write(tmp_path, _PAT_MD)  # без metadata.json
+    _write_pattern_lib(tmp_path, ["pat_a"], conflicts_md=_CONFLICTS_MD)
+    assert verify_tools.check_patterns(root, 5) == []
+
+
+def test_patterns_no_library_no_findings(tmp_path: Path) -> None:
+    # Нет каталога patterns/ → сверять не с чем, молчим (даже при опечатке).
+    meta = _pat_meta([{"number": 1, "title": "Р", "patterns_used": ["typo_xxx"]}])
+    root = _write(tmp_path, _PAT_MD, metadata=meta)
+    assert verify_tools.check_patterns(root, 5) == []
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -297,7 +459,12 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
     report = verify_tools.verify_chapter(root, 5)
     assert report["verdict"] == "ok"
     assert report["counts"] == {"error": 0, "warning": 0, "info": 0}
-    assert report["checks_run"] == ["check_structure", "check_markers", "check_terms"]
+    assert report["checks_run"] == [
+        "check_structure",
+        "check_markers",
+        "check_terms",
+        "check_patterns",
+    ]
     assert report["source"] == "chapter.md"
 
 
@@ -347,6 +514,17 @@ def test_real_chapter4_terms_findings(real_repo: Path) -> None:
     findings = verify_tools.check_terms(real_repo, 4)
     not_marked = [f for f in findings if f["code"] == "term_not_marked"]
     assert len(not_marked) == 3
+
+
+def test_real_chapter4_patterns_findings(real_repo: Path) -> None:
+    """Глава 4: intro_analogy_first + intro_etymology вместе в §1 → 1 redundancy."""
+    findings = verify_tools.check_patterns(real_repo, 4)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f["code"] == "pattern_redundancy"
+    assert f["severity"] == "info"
+    assert "intro_analogy_first" in f["message"]
+    assert "intro_etymology" in f["message"]
 
 
 def test_real_chapter4_verdict_fail(real_repo: Path) -> None:
