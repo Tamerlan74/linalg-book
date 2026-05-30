@@ -22,6 +22,9 @@ r"""Группа B — проверки готовой главы (Часть 0 
 - :func:`check_styleguide` — проза сверяется с механически проверяемой
   частью стилгайда: запрещённые канцелярские конструкции и нотация формул
   (``\times`` между числами). Семантика (залог, тон) — вне охвата.
+- :func:`check_links`     — ссылки прозы сверяются с файловой системой:
+  существуют ли локальные картинки ``![alt](images/...)`` и есть ли папка
+  ``chapter_NN`` для каждой упомянутой «главы N».
 - :func:`verify_chapter`  — оркестратор: запускает все проверки и сводит
   находки в один отчёт с вердиктом ``ok`` / ``warn`` / ``fail``.
 
@@ -74,6 +77,10 @@ check_styleguide
     styleguide_forbidden_phrase warning — канцелярит из стоп-списка стилгайда
     styleguide_filler_word      info    — связка-наполнитель «является»
     styleguide_formula_notation warning — \times между числами (нужен \cdot)
+
+check_links
+    missing_image           error    — локальная картинка не найдена на диске
+    broken_chapter_ref      warning  — нет папки chapter_NN для «главы N»
 
 Вердикт ``verify_chapter``: ``fail`` если есть хоть один ``error``;
 иначе ``warn`` если есть ``warning``; иначе ``ok``.
@@ -983,6 +990,95 @@ def check_styleguide(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     return findings
 
 
+# ─── check_links ──────────────────────────────────────────────────────
+
+# Markdown-картинка: ![alt](path) — захватываем путь до первого пробела/
+# закрывающей скобки (опциональный « "title"» после пути отбрасываем).
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(\s*([^)\s]+)")
+
+# Ссылка на главу в прозе: «глава/главе/главы/главу/главой N» или «гл. N».
+# \b перед «глав», чтобы не цеплять «заглавие» и подобные слова.
+_CHAPTER_REF_RE = re.compile(
+    r"\bглав(?:а|е|ы|у|ой)\s+(\d+)|\bгл\.\s*(\d+)",
+    re.IGNORECASE,
+)
+
+# Внешние/нелокальные картинки офлайн проверить нельзя — пропускаем.
+_EXTERNAL_IMAGE_PREFIXES = ("http://", "https://", "data:", "//")
+
+
+def check_links(root: Path, chapter_number: int) -> list[dict[str, Any]]:
+    """Сверить ссылки прозы с тем, что реально есть на диске.
+
+    Две находки:
+
+    - ``missing_image`` (error) — Markdown-картинка ``![alt](images/...)``
+      ссылается на локальный файл, которого нет на диске (путь берётся
+      относительно папки главы). Внешние ссылки (``http(s)://``, ``data:``,
+      ``//``) пропускаются — офлайн их не проверить.
+    - ``broken_chapter_ref`` (warning) — проза упоминает «главу N» (или
+      «гл. N»), а папки ``chapters/chapter_NN`` в репозитории нет. Каждый
+      отсутствующий номер — одна находка (по первому упоминанию). Сюда же
+      попадают ссылки «вперёд» на ещё не написанные главы.
+
+    Сверяется только проза и файловая система — план (``metadata.json``)
+    этой проверке не нужен, поэтому она работает и на черновике без плана.
+
+    Args:
+        root: корень репозитория.
+        chapter_number: номер главы.
+
+    Returns:
+        Список находок. Пустой — все ссылки на месте.
+
+    Raises:
+        ContentNotFoundError: если файла главы нет (глава не написана).
+    """
+    content, _ = _read_chapter(root, chapter_number)
+    check = "check_links"
+    chapter_dir = _chapter_dir(root, chapter_number)
+    findings: list[dict[str, Any]] = []
+    seen_missing_chapters: set[int] = set()
+
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        # 1) Картинки: существует ли локальный файл.
+        for m in _IMAGE_RE.finditer(line):
+            path = m.group(1).strip()
+            if path.lower().startswith(_EXTERNAL_IMAGE_PREFIXES):
+                continue
+            if not (chapter_dir / path).is_file():
+                findings.append(
+                    _finding(
+                        check,
+                        "error",
+                        "missing_image",
+                        f"Картинка «{path}» не найдена: ожидался файл "
+                        f"{chapter_dir.name}/{path}.",
+                        location=f"строка {lineno}",
+                    )
+                )
+        # 2) Ссылки на главы: есть ли папка chapter_NN.
+        for m in _CHAPTER_REF_RE.finditer(line):
+            num = int(m.group(1) or m.group(2))
+            if num in seen_missing_chapters:
+                continue
+            ref_dir = _chapter_dir(root, num)
+            if not ref_dir.is_dir():
+                seen_missing_chapters.add(num)
+                findings.append(
+                    _finding(
+                        check,
+                        "warning",
+                        "broken_chapter_ref",
+                        f"Ссылка на главу {num}, но папки {ref_dir.name} "
+                        f"в репозитории нет.",
+                        location=f"строка {lineno}",
+                    )
+                )
+
+    return findings
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 # Все проверки, которые запускает оркестратор. Расширяется со срезами.
@@ -993,6 +1089,7 @@ _ALL_CHECKS = (
     check_patterns,
     check_promises,
     check_styleguide,
+    check_links,
 )
 
 
@@ -1011,7 +1108,8 @@ def verify_chapter(root: Path, chapter_number: int) -> dict[str, Any]:
               "source": "chapter.md" | "draft.md",
               "checks_run": ["check_structure", "check_markers",
                              "check_terms", "check_patterns",
-                             "check_promises", "check_styleguide"],
+                             "check_promises", "check_styleguide",
+                             "check_links"],
               "counts": {"error": E, "warning": W, "info": I},
               "verdict": "ok" | "warn" | "fail",
               "findings": [ ...все находки... ],

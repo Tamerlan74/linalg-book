@@ -610,6 +610,107 @@ def test_styleguide_no_metadata_still_runs(tmp_path: Path) -> None:
     )
 
 
+# ─── check_links ──────────────────────────────────────────────────────
+
+
+def test_links_clean_no_findings(tmp_path: Path) -> None:
+    md = (
+        "# Глава 5\n\n## 1. Раздел\n\n"
+        "![Схема](images/diagram.svg)\n\n"
+        "Мы помним это из главы 4.\n"
+    )
+    root = _write(tmp_path, md)
+    img_dir = root / "chapters" / "chapter_05" / "images"
+    img_dir.mkdir()
+    (img_dir / "diagram.svg").write_text("<svg/>", encoding="utf-8")
+    (root / "chapters" / "chapter_04").mkdir()  # ссылка «из главы 4» валидна
+    assert verify_tools.check_links(root, 5) == []
+
+
+def test_links_missing_image_is_error(tmp_path: Path) -> None:
+    md = "# Глава 5\n\n![Схема](images/missing.svg)\n"
+    root = _write(tmp_path, md)
+    findings = verify_tools.check_links(root, 5)
+    mi = [f for f in findings if f["code"] == "missing_image"]
+    assert len(mi) == 1
+    assert mi[0]["severity"] == "error"
+    assert mi[0]["location"] == "строка 3"
+    assert "images/missing.svg" in mi[0]["message"]
+
+
+def test_links_existing_image_no_finding(tmp_path: Path) -> None:
+    md = "# Глава 5\n\n![Схема](images/here.svg)\n"
+    root = _write(tmp_path, md)
+    img = root / "chapters" / "chapter_05" / "images"
+    img.mkdir()
+    (img / "here.svg").write_text("<svg/>", encoding="utf-8")
+    assert "missing_image" not in _codes(verify_tools.check_links(root, 5))
+
+
+def test_links_external_image_skipped(tmp_path: Path) -> None:
+    # Внешнюю картинку офлайн не проверить — пропускаем, не ругаемся.
+    md = "# Глава 5\n\n![Внешняя](https://example.com/pic.png)\n"
+    root = _write(tmp_path, md)
+    assert verify_tools.check_links(root, 5) == []
+
+
+def test_links_broken_chapter_ref_is_warning(tmp_path: Path) -> None:
+    # Глава 5 ссылается на главу 3, которой в репозитории нет.
+    md = "# Глава 5\n\nКак мы выяснили в главе 3, det растягивает площадь.\n"
+    root = _write(tmp_path, md)
+    findings = verify_tools.check_links(root, 5)
+    br = [f for f in findings if f["code"] == "broken_chapter_ref"]
+    assert len(br) == 1
+    assert br[0]["severity"] == "warning"
+    assert "3" in br[0]["message"]
+
+
+def test_links_existing_chapter_ref_no_finding(tmp_path: Path) -> None:
+    md = "# Глава 5\n\nКак мы выяснили в главе 3, всё хорошо.\n"
+    root = _write(tmp_path, md)
+    (root / "chapters" / "chapter_03").mkdir()  # глава 3 существует
+    assert "broken_chapter_ref" not in _codes(verify_tools.check_links(root, 5))
+
+
+def test_links_broken_chapter_ref_dedup(tmp_path: Path) -> None:
+    # Дважды упомянута глава 3 → одна находка (дедуп по номеру главы).
+    md = "# Глава 5\n\nСм. главу 3 здесь.\n\nИ ещё раз из главы 3 там.\n"
+    root = _write(tmp_path, md)
+    br = [
+        f
+        for f in verify_tools.check_links(root, 5)
+        if f["code"] == "broken_chapter_ref"
+    ]
+    assert len(br) == 1
+
+
+def test_links_chapter_ref_abbrev(tmp_path: Path) -> None:
+    # «гл. 7» — тоже ссылка на главу.
+    md = "# Глава 5\n\nПодробности в гл. 7.\n"
+    root = _write(tmp_path, md)
+    br = [
+        f
+        for f in verify_tools.check_links(root, 5)
+        if f["code"] == "broken_chapter_ref"
+    ]
+    assert len(br) == 1
+    assert "7" in br[0]["message"]
+
+
+def test_links_chapter_word_without_number_no_finding(tmp_path: Path) -> None:
+    # «в этой главе» без номера — не ссылка, ничего не ловим.
+    md = "# Глава 5\n\nВ этой главе мы поговорим о матрицах.\n"
+    root = _write(tmp_path, md)
+    assert "broken_chapter_ref" not in _codes(verify_tools.check_links(root, 5))
+
+
+def test_links_no_metadata_still_runs(tmp_path: Path) -> None:
+    # check_links работает по прозе + ФС, metadata.json не нужен.
+    md = "# Глава 5\n\n![X](images/none.svg)\n"
+    root = _write(tmp_path, md)  # без metadata
+    assert "missing_image" in _codes(verify_tools.check_links(root, 5))
+
+
 # ─── verify_chapter ───────────────────────────────────────────────────
 
 
@@ -625,6 +726,7 @@ def test_verify_clean_chapter_ok(tmp_path: Path) -> None:
         "check_patterns",
         "check_promises",
         "check_styleguide",
+        "check_links",
     ]
     assert report["source"] == "chapter.md"
 
@@ -713,3 +815,18 @@ def test_real_chapter4_styleguide_clean(real_repo: Path) -> None:
     хорошая проза проходит без ложных срабатываний.
     """
     assert verify_tools.check_styleguide(real_repo, 4) == []
+
+
+def test_real_chapter4_links_findings(real_repo: Path) -> None:
+    """Глава 4: 5 картинок images/*.svg без файлов (нет папки images/) и
+
+    ссылка «из главы 3», для которой нет папки chapter_03 в фикстуре.
+    """
+    findings = verify_tools.check_links(real_repo, 4)
+    missing_img = [f for f in findings if f["code"] == "missing_image"]
+    broken_ref = [f for f in findings if f["code"] == "broken_chapter_ref"]
+    assert len(missing_img) == 5
+    assert all(f["severity"] == "error" for f in missing_img)
+    assert len(broken_ref) == 1
+    assert broken_ref[0]["severity"] == "warning"
+    assert "3" in broken_ref[0]["message"]

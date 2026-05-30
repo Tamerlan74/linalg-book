@@ -286,13 +286,31 @@ def check_styleguide(chapter_number: int) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def check_links(chapter_number: int) -> list[dict[str, Any]]:
+    """Проверить ссылки главы против файловой системы.
+
+    Сверяет прозу с диском: существуют ли локальные картинки
+    **[alt](images/...)** (missing_image, error) и есть ли папка
+    chapter_NN для каждой упомянутой «главы N» (broken_chapter_ref,
+    warning; сюда же ссылки «вперёд» на ещё не написанные главы).
+    Внешние ссылки (http/https/data) пропускаются. metadata.json не
+    нужен — работает и на черновике. Возвращает список находок.
+
+    Args:
+        chapter_number: номер проверяемой главы.
+    """
+    log.info("tool: check_links(chapter_number=%s)", chapter_number)
+    return verify_tools.check_links(REPO_ROOT, chapter_number)
+
+
+@mcp.tool()
 def verify_chapter(chapter_number: int) -> dict[str, Any]:
     """Запустить все проверки главы и вернуть сводный отчёт.
 
     Оркестратор: прогоняет check_structure, check_markers, check_terms,
-    check_patterns, check_promises и check_styleguide, агрегирует находки,
-    считает error/warning/info и выдаёт вердикт ok/warn/fail. Вызывай
-    после написания черновика главы.
+    check_patterns, check_promises, check_styleguide и check_links,
+    агрегирует находки, считает error/warning/info и выдаёт вердикт
+    ok/warn/fail. Вызывай после написания черновика главы.
 
     Args:
         chapter_number: номер проверяемой главы.
